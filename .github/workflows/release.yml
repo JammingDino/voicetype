@@ -32,21 +32,19 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/voicetype | Out-Null
-          Copy-Item target/release/voicetype.exe, packaging/README.txt dist/voicetype/
-          # Windows line endings so Notepad on older Windows shows it properly.
-          (Get-Content dist/voicetype/README.txt) -join "`r`n" | Set-Content -NoNewline dist/voicetype/README.txt
-          Compress-Archive -Path dist/voicetype -DestinationPath dist/voicetype-windows-x64.zip
-          # The in-app updater refuses a zip that doesn't match this.
-          (Get-FileHash dist/voicetype-windows-x64.zip -Algorithm SHA256).Hash.ToLower() | Set-Content -NoNewline dist/voicetype-windows-x64.zip.sha256
+          New-Item -ItemType Directory -Force dist | Out-Null
+          # The exe is its own installer; see src/install.rs.
+          Copy-Item target/release/voicetype.exe dist/voicetype-setup.exe
+          # The in-app updater refuses an exe that doesn't match this.
+          (Get-FileHash dist/voicetype-setup.exe -Algorithm SHA256).Hash.ToLower() | Set-Content -NoNewline dist/voicetype-setup.exe.sha256
 
       - uses: actions/upload-artifact@v7
         with:
-          name: voicetype-windows-x64
-          path: dist/voicetype-windows-x64.zip*
+          name: voicetype-setup
+          path: dist/voicetype-setup.exe*
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/voicetype-windows-x64.zip dist/voicetype-windows-x64.zip.sha256 --title "voicetype ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" dist/voicetype-setup.exe dist/voicetype-setup.exe.sha256 --title "voicetype ${{ github.ref_name }}" --notes-file packaging/release-notes.md --generate-notes
