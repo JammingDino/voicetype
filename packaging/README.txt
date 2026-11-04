@@ -7,12 +7,16 @@ voicetype - dictate into any window, on your own PC (nothing is sent to the clou
 3. Click into any text box and hold Ctrl + Alt + Space while you talk.
    Let go and the text is typed for you.
 
-Settings lets you change the shortcut (click it and press new keys), switch to
-press-to-start with auto-stop after silence, type each phrase as you pause
-(real-time), or start hands-free by saying "hey jarvis".
+The pages on the left change how it works:
+  Shortcut     pick new keys (click the box, press them), hold or press-to-start
+  Hands-free   stop on silence, type each phrase as you pause, say "hey jarvis"
+  Microphone   choose the mic and how loud counts as speech
+  Output       paste or type keystrokes
+  General      run at startup, tray, floating indicator
 
 Closing the window keeps it running in the tray (bottom-right, by the clock);
 right-click the tray icon -> Quit to exit. A floating pill at the bottom of the
 screen shows when it's listening.
 
-Files and models live in %APPDATA%\voicetype - delete that folder to uninstall.
+To uninstall: untick "Run voicetype at startup" (General), quit, delete the exe
+and the %APPDATA%\voicetype folder (models and settings).
