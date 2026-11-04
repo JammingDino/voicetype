@@ -174,7 +174,7 @@ fn main() {
         return;
     }
     if install::is_installed_copy() {
-        let _ = install::register();
+        install::refresh();
     }
     update::cleanup();
     let r = ui::run(flag("--hidden"));

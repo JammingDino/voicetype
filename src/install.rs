@@ -128,20 +128,39 @@ fn install() -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     register()?;
-    let _ = powershell(&format!(
-        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut({}); $s.TargetPath = {}; $s.WorkingDirectory = {}; $s.Save()",
-        ps(&shortcut()),
-        ps(&target),
-        ps(&dir)
-    ));
+    make_shortcut();
     // Test hooks (fake mic/output) are inherited on purpose; the install override is not.
     hidden(std::process::Command::new(&target).env_remove("VOICETYPE_INSTALL_TEST")).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
 
+fn make_shortcut() {
+    let target = installed_exe();
+    let _ = powershell(&format!(
+        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut({}); $s.TargetPath = {}; $s.WorkingDirectory = {}; $s.IconLocation = {} + ',0'; $s.Save()",
+        ps(&shortcut()),
+        ps(&target),
+        ps(&install_dir()),
+        ps(&target)
+    ));
+    // Explorer caches icons per path, so a replaced exe would keep showing its old one.
+    let _ = hidden(std::process::Command::new("ie4uinit").arg("-show")).output();
+}
+
+/// At each launch of the installed copy. A self-update swaps only the exe, so
+/// the first launch of a new version also rewrites the shortcut.
+pub fn refresh() {
+    let version = hidden(std::process::Command::new("reg").args(["query", UNINSTALL_KEY, "/v", "DisplayVersion"])).output();
+    let updated = !version.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(env!("CARGO_PKG_VERSION")));
+    let _ = register();
+    if updated {
+        make_shortcut();
+    }
+}
+
 /// Write the Installed apps entry. Re-run by every launch of the installed copy,
 /// so the version shown there follows self-updates.
-pub fn register() -> Result<(), String> {
+fn register() -> Result<(), String> {
     let exe = installed_exe();
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let q = |s: &str| format!("\"{}\"", esc(s));
