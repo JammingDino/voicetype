@@ -23,17 +23,19 @@ const AMBER: Color32 = Color32::from_rgb(255, 184, 76);
 const GREEN: Color32 = Color32::from_rgb(64, 200, 140);
 const MUTED: Color32 = Color32::from_rgb(140, 148, 168);
 
-pub fn run() -> eframe::Result {
+/// `hidden`: start in the tray (launched at sign-in).
+pub fn run(hidden: bool) -> eframe::Result {
     let (rgba, w, h) = dot_icon(ACCENT);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([900.0, 600.0])
             .with_min_inner_size([720.0, 480.0])
             .with_title("voicetype")
-            .with_icon(egui::IconData { rgba, width: w, height: h }),
+            .with_icon(egui::IconData { rgba, width: w, height: h })
+            .with_visible(!hidden),
         ..Default::default()
     };
-    eframe::run_native("voicetype", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
+    eframe::run_native("voicetype", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx, hidden)))))
 }
 
 fn style(ctx: &egui::Context) {
@@ -192,8 +194,19 @@ enum Msg {
 enum Tab {
     Models,
     Test,
-    Settings,
+    Shortcut,
+    HandsFree,
+    Microphone,
+    Output,
+    General,
 }
+
+/// Sidebar groups: (heading, pages).
+const NAV: &[(&str, &[(Tab, &str)])] = &[
+    ("SETUP", &[(Tab::Models, "Models"), (Tab::Test, "Test bench")]),
+    ("DICTATION", &[(Tab::Shortcut, "Shortcut"), (Tab::HandsFree, "Hands-free"), (Tab::Microphone, "Microphone"), (Tab::Output, "Output")]),
+    ("APP", &[(Tab::General, "General")]),
+];
 
 struct App {
     tab: Tab,
@@ -220,11 +233,12 @@ struct App {
     tray_color: Color32,
     hidden: bool,
     quitting: bool,
+    hide_frames: u8,
     overlay_open: bool,
 }
 
 impl App {
-    fn new(ctx: &egui::Context) -> Self {
+    fn new(ctx: &egui::Context, hidden: bool) -> Self {
         style(ctx);
         let cfg = crate::load_config();
         let (tx, rx) = channel();
@@ -277,7 +291,7 @@ impl App {
         }
 
         let mut app = App {
-            tab: if engine::MODELS.iter().any(|m| engine::installed(m.id)) { Tab::Settings } else { Tab::Models },
+            tab: if engine::MODELS.iter().any(|m| engine::installed(m.id)) { Tab::Shortcut } else { Tab::Models },
             test_model: cfg.model.clone(),
             edit: cfg,
             cfg: shared,
@@ -299,11 +313,20 @@ impl App {
             downloading: None,
             tray,
             tray_color: ACCENT,
-            hidden: false,
+            hidden,
             quitting: false,
+            hide_frames: if hidden { 3 } else { 0 },
             overlay_open: false,
         };
         app.apply_hotkey();
+        if app.edit.run_at_startup {
+            crate::set_autostart(true);
+        }
+        if app.hidden && app.tray.is_none() {
+            // No tray to bring it back from: show the window after all.
+            app.hidden = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        }
         app
     }
 
@@ -350,15 +373,19 @@ impl App {
             ui.painter().circle_filled(r.center(), 5.5, ACCENT);
             ui.label(RichText::new("voicetype").size(20.0).strong().color(Color32::WHITE));
         });
-        ui.add_space(18.0);
-        for (tab, name) in [(Tab::Models, "Models"), (Tab::Test, "Test bench"), (Tab::Settings, "Settings")] {
-            let selected = self.tab == tab;
-            let text = RichText::new(format!("   {name}")).size(15.0).color(if selected { Color32::WHITE } else { MUTED });
-            let b = egui::Button::new(text)
-                .fill(if selected { ACCENT.gamma_multiply(0.25) } else { Color32::TRANSPARENT })
-                .min_size(vec2(ui.available_width(), 38.0));
-            if ui.add(b).clicked() {
-                self.tab = tab;
+        ui.add_space(8.0);
+        for (group, pages) in NAV {
+            ui.add_space(8.0);
+            ui.label(RichText::new(*group).size(11.0).strong().color(MUTED.gamma_multiply(0.7)));
+            for &(tab, name) in *pages {
+                let selected = self.tab == tab;
+                let text = RichText::new(format!("   {name}")).size(15.0).color(if selected { Color32::WHITE } else { MUTED });
+                let b = egui::Button::new(text)
+                    .fill(if selected { ACCENT.gamma_multiply(0.25) } else { Color32::TRANSPARENT })
+                    .min_size(vec2(ui.available_width(), 34.0));
+                if ui.add(b).clicked() {
+                    self.tab = tab;
+                }
             }
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
@@ -393,13 +420,14 @@ impl App {
 
     fn models_tab(&mut self, ui: &mut egui::Ui) {
         Self::header(ui, "Models", "Download a speech model. Bigger is more accurate and slower; a GPU makes even the largest instant.");
+        if engine::MODELS.iter().any(|m| engine::installed(m.id)) {
+            self.engine_card(ui);
+        }
         let downloading = engine::DOWNLOADING.load(Ordering::Relaxed);
         if let Some(name) = self.gpu_name.clone() {
             card(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        section(ui, &name.as_str(), "The GPU engine is a one-off 670 MB download and makes transcription 10–100× faster.");
-                    });
+                    section(ui, &name, "");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if engine::gpu_engine_installed() {
                             if ui.button("Remove").clicked() {
@@ -412,6 +440,8 @@ impl App {
                         }
                     });
                 });
+                // Below the buttons, not beside them, so the two never overlap in a narrow window.
+                ui.label(RichText::new("The GPU engine is a one-off 670 MB download and makes transcription 10–100× faster.").small().color(MUTED));
                 if self.downloading == Some("gpu") {
                     self.progress(ui);
                 }
@@ -495,7 +525,7 @@ impl App {
                     rec_start(&self.test_rec, self.edit.device.clone(), self.tx.clone());
                 }
                 ui.separator();
-                ui.add(egui::TextEdit::singleline(&mut self.wav_path).hint_text("C:\\path\\to\\clip.wav").desired_width(260.0));
+                ui.add(egui::TextEdit::singleline(&mut self.wav_path).hint_text("C:\\path\\to\\clip.wav").desired_width((ui.available_width() - 160.0).max(200.0)));
                 if ui.button("Load").clicked() {
                     self.load_wav();
                 }
@@ -544,27 +574,20 @@ impl App {
         if self.results.is_empty() {
             return;
         }
-        card(ui, |ui| {
-            section(ui, "Results", "Server start is a one-off per model; RTF is transcribe time ÷ clip length (lower is faster).");
-            egui::Grid::new("results").striped(true).spacing([14.0, 8.0]).show(ui, |ui| {
-                for h in ["Model", "Engine", "Start", "Transcribe", "RTF", "Text"] {
-                    ui.label(RichText::new(h).small().strong().color(MUTED));
-                }
-                ui.end_row();
-                for r in self.results.iter().rev() {
-                    ui.label(RichText::new(&r.model).strong());
+        section(ui, "Results", "Server start is a one-off per model. RTF is transcribe time / clip length; lower is faster.");
+        for r in self.results.iter().rev() {
+            card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&r.model).size(16.0).strong().color(Color32::WHITE));
                     badge(ui, if r.gpu { "GPU" } else { "CPU" }, if r.gpu { GREEN } else { AMBER });
-                    ui.label(format!("{:.2} s", r.start_s));
-                    ui.label(format!("{:.2} s", r.secs));
-                    ui.label(format!("{:.3}", r.secs / r.audio_s.max(0.01)));
-                    match &r.text {
-                        Ok(t) => ui.add(egui::Label::new(t).wrap()),
-                        Err(e) => ui.colored_label(RED, e),
-                    };
-                    ui.end_row();
-                }
+                    ui.label(RichText::new(format!("start {:.2} s   ·   transcribe {:.2} s   ·   RTF {:.3}", r.start_s, r.secs, r.secs / r.audio_s.max(0.01))).color(MUTED));
+                });
+                match &r.text {
+                    Ok(t) => ui.add(egui::Label::new(RichText::new(t).size(15.5)).wrap()),
+                    Err(e) => ui.add(egui::Label::new(RichText::new(e).color(RED)).wrap()),
+                };
             });
-        });
+        }
     }
 
     fn load_wav(&mut self) {
@@ -624,87 +647,121 @@ impl App {
         }
     }
 
-    fn settings_tab(&mut self, ui: &mut egui::Ui) {
-        Self::header(ui, "Settings", "Everything here is saved as you change it.");
-        card(ui, |ui| {
-            section(ui, "Shortcut", "Click the box, then press the keys you want.");
-            self.hotkey_capture(ui);
-            let e = &mut self.edit;
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut e.mode, "hold".into(), "Hold to talk");
-                ui.radio_value(&mut e.mode, "toggle".into(), "Press to start, press again to stop");
-            });
-        });
+    fn engine_card(&mut self, ui: &mut egui::Ui) {
         let e = &mut self.edit;
         card(ui, |ui| {
-            section(ui, "Hands-free", "All optional.");
+            section(ui, "Dictation model", "The model used for dictation and the wake word. Download more below.");
             ui.horizontal(|ui| {
-                ui.checkbox(&mut e.auto_stop, "Stop by itself after");
-                ui.add_enabled(e.auto_stop, egui::Slider::new(&mut e.auto_stop_secs, 0.5..=6.0).suffix(" s of silence").step_by(0.1));
-            });
-            ui.label(RichText::new("Applies to press-to-start and wake-word recordings; hold-to-talk ends when you let go.").small().color(MUTED));
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut e.split_on_pause, "Real-time: type each phrase when I pause for");
-                ui.add_enabled(e.split_on_pause, egui::Slider::new(&mut e.pause_secs, 0.3..=2.0).suffix(" s").step_by(0.1));
-            });
-            ui.label(RichText::new("Short pieces are quicker to transcribe and text appears while you keep talking.").small().color(MUTED));
-            ui.checkbox(&mut e.live_preview, "Show the words so far in the overlay while I talk");
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut e.wake_word, "Start when I say");
-                ui.add_enabled(e.wake_word, egui::TextEdit::singleline(&mut e.wake_phrase).desired_width(160.0));
-            });
-            ui.label(RichText::new("Keeps the mic open and checks each burst of speech with the dictation model. The phrase itself isn't typed.").small().color(MUTED));
-        });
-        card(ui, |ui| {
-            section(ui, "Microphone", "Speech must cross the amber line. Raise the threshold if room noise keeps recordings going.");
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("device").width(300.0).selected_text(e.device.as_deref().unwrap_or("System default")).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut e.device, None, "System default");
-                    for d in &self.devices {
-                        ui.selectable_value(&mut e.device, Some(d.clone()), d);
-                    }
-                });
-                if ui.button("Refresh").clicked() {
-                    self.devices = audio::list_input_devices();
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Silence threshold");
-                ui.add(egui::Slider::new(&mut e.silence_threshold, 0.001..=0.1).logarithmic(true));
-            });
-            let mut monitor = self.state.monitor.load(Ordering::Relaxed);
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut monitor, "Show mic level");
-                if monitor || self.state.busy() || e.wake_word {
-                    let (rms, th) = self.state.vad();
-                    meter(ui, rms, Some(th), ui.available_width().min(320.0));
-                    ui.ctx().request_repaint_after(Duration::from_millis(50));
-                }
-            });
-            self.state.monitor.store(monitor, Ordering::Relaxed);
-        });
-        card(ui, |ui| {
-            section(ui, "Output", "Paste is fastest and handles any character; keystrokes work where paste is blocked.");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut e.output, output::Mode::Paste, "Paste");
-                ui.radio_value(&mut e.output, output::Mode::Keys, "Type keystrokes");
-            });
-            ui.checkbox(&mut e.trailing_space, "Add a space after each piece of text");
-        });
-        card(ui, |ui| {
-            section(ui, "Engine", "");
-            ui.horizontal(|ui| {
-                ui.label("Model");
-                egui::ComboBox::from_id_salt("model").selected_text(engine::model(&e.model).map_or(e.model.as_str(), |m| m.label)).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("model").width(260.0).selected_text(engine::model(&e.model).map_or(e.model.as_str(), |m| m.label)).show_ui(ui, |ui| {
                     for m in engine::MODELS.iter().filter(|m| engine::installed(m.id)) {
                         ui.selectable_value(&mut e.model, m.id.to_string(), m.label);
                     }
                 });
                 ui.label("Language");
                 ui.add(egui::TextEdit::singleline(&mut e.language).desired_width(60.0).hint_text("auto"));
+                ui.checkbox(&mut e.gpu, "Use the GPU when available");
             });
-            ui.checkbox(&mut e.gpu, "Use the GPU when available");
         });
+    }
+
+    fn shortcut_tab(&mut self, ui: &mut egui::Ui) {
+        Self::header(ui, "Shortcut", "The key combination that starts dictation from any app.");
+        card(ui, |ui| {
+            section(ui, "Keys", "Click the box, then press the keys you want. Esc cancels.");
+            self.hotkey_capture(ui);
+        });
+        let e = &mut self.edit;
+        card(ui, |ui| {
+            section(ui, "How it works", "");
+            ui.radio_value(&mut e.mode, "hold".into(), "Hold to talk: record while the keys are held, type when you let go");
+            ui.radio_value(&mut e.mode, "toggle".into(), "Press to start, press again to stop (or let it stop on silence, see Hands-free)");
+        });
+    }
+
+    fn hands_free_tab(&mut self, ui: &mut egui::Ui) {
+        Self::header(ui, "Hands-free", "Each of these is optional and works on its own.");
+        let e = &mut self.edit;
+        card(ui, |ui| {
+            section(ui, "Stop on silence", "Press-to-start and wake-word recordings end by themselves. Hold-to-talk always ends when you let go.");
+            ui.checkbox(&mut e.auto_stop, "Stop recording automatically");
+            ui.add_enabled(e.auto_stop, egui::Slider::new(&mut e.auto_stop_secs, 0.5..=6.0).text("seconds of silence").step_by(0.1));
+        });
+        card(ui, |ui| {
+            section(ui, "Real-time typing", "Type each phrase as soon as you pause instead of waiting for the end. Short pieces transcribe faster and are easier on the GPU.");
+            ui.checkbox(&mut e.split_on_pause, "Type each phrase when I pause");
+            ui.add_enabled(e.split_on_pause, egui::Slider::new(&mut e.pause_secs, 0.3..=2.0).text("second pause").step_by(0.1));
+        });
+        card(ui, |ui| {
+            section(ui, "Live preview", "Show the words heard so far in the floating indicator while you talk.");
+            ui.checkbox(&mut e.live_preview, "Show live preview");
+        });
+        card(ui, |ui| {
+            section(ui, "Wake word", "Say the phrase to start recording without touching the keyboard. The mic stays open and each burst of speech is checked with the dictation model. The phrase itself isn't typed.");
+            ui.checkbox(&mut e.wake_word, "Listen for a wake phrase");
+            ui.horizontal(|ui| {
+                ui.label("Phrase");
+                ui.add_enabled(e.wake_word, egui::TextEdit::singleline(&mut e.wake_phrase).desired_width(220.0));
+            });
+        });
+    }
+
+    fn microphone_tab(&mut self, ui: &mut egui::Ui) {
+        Self::header(ui, "Microphone", "Which mic to use, and how loud counts as speech.");
+        let e = &mut self.edit;
+        card(ui, |ui| {
+            section(ui, "Input device", "");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("device")
+                    .width((ui.available_width() - 100.0).max(200.0))
+                    .selected_text(e.device.as_deref().unwrap_or("System default"))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut e.device, None, "System default");
+                        for d in &self.devices {
+                            ui.selectable_value(&mut e.device, Some(d.clone()), d);
+                        }
+                    });
+                if ui.button("Refresh").clicked() {
+                    self.devices = audio::list_input_devices();
+                }
+            });
+        });
+        card(ui, |ui| {
+            section(ui, "Silence threshold", "Speech has to cross the amber line. Raise it if room noise keeps recordings going; lower it if quiet speech gets cut off.");
+            ui.add(egui::Slider::new(&mut e.silence_threshold, 0.001..=0.1).logarithmic(true));
+            let mut monitor = self.state.monitor.load(Ordering::Relaxed);
+            ui.checkbox(&mut monitor, "Show live mic level");
+            if monitor || self.state.busy() || e.wake_word {
+                let (rms, th) = self.state.vad();
+                meter(ui, rms, Some(th), ui.available_width());
+                ui.ctx().request_repaint_after(Duration::from_millis(50));
+            }
+            self.state.monitor.store(monitor, Ordering::Relaxed);
+        });
+    }
+
+    fn output_tab(&mut self, ui: &mut egui::Ui) {
+        Self::header(ui, "Output", "How the text gets into the app you're typing in.");
+        let e = &mut self.edit;
+        card(ui, |ui| {
+            section(ui, "Method", "");
+            ui.radio_value(&mut e.output, output::Mode::Paste, "Paste: fastest and handles any character; your clipboard text is put back afterwards");
+            ui.radio_value(&mut e.output, output::Mode::Keys, "Type keystrokes: for places that block paste (some terminals, remote desktops, games)");
+        });
+        card(ui, |ui| {
+            section(ui, "Spacing", "");
+            ui.checkbox(&mut e.trailing_space, "Add a space after each piece of text, so the next dictation doesn't run into it");
+        });
+    }
+
+    fn general_tab(&mut self, ui: &mut egui::Ui) {
+        Self::header(ui, "General", "");
+        let e = &mut self.edit;
+        if cfg!(windows) {
+            card(ui, |ui| {
+                section(ui, "Startup", "Starts quietly in the tray when you sign in to Windows.");
+                ui.checkbox(&mut e.run_at_startup, "Run voicetype at startup");
+            });
+        }
         card(ui, |ui| {
             section(ui, "Window", "");
             ui.checkbox(&mut e.close_to_tray, "Closing the window keeps voicetype running in the tray");
@@ -779,6 +836,12 @@ impl eframe::App for App {
                 let _ = t.set_tooltip(Some(format!("voicetype: {}", self.live_status().1)));
             }
         }
+        // eframe shows the window after its first frame no matter what; undo that for a --hidden launch.
+        if self.hide_frames > 0 {
+            self.hide_frames -= 1;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.request_repaint();
+        }
         // While hidden in the tray eframe skips `ui`, which is what draws the overlay.
         let want_overlay = busy && self.edit.overlay;
         if self.hidden && (want_overlay || self.overlay_open) {
@@ -816,7 +879,11 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| match self.tab {
                 Tab::Models => self.models_tab(ui),
                 Tab::Test => self.test_tab(ui),
-                Tab::Settings => self.settings_tab(ui),
+                Tab::Shortcut => self.shortcut_tab(ui),
+                Tab::HandsFree => self.hands_free_tab(ui),
+                Tab::Microphone => self.microphone_tab(ui),
+                Tab::Output => self.output_tab(ui),
+                Tab::General => self.general_tab(ui),
             });
         });
         if self.state.busy() {
@@ -824,9 +891,13 @@ impl eframe::App for App {
         }
 
         if self.edit != *self.cfg.lock().unwrap() {
+            let old_startup = self.cfg.lock().unwrap().run_at_startup;
             let hotkey_changed = self.edit.hotkey != self.cfg.lock().unwrap().hotkey;
             *self.cfg.lock().unwrap() = self.edit.clone();
             crate::save_config(&self.edit);
+            if self.edit.run_at_startup != old_startup {
+                crate::set_autostart(self.edit.run_at_startup);
+            }
             if hotkey_changed {
                 self.apply_hotkey();
             }

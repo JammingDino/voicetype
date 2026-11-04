@@ -34,6 +34,8 @@ pub struct Config {
     silence_threshold: f32,
     close_to_tray: bool,
     overlay: bool,
+    /// Launch (hidden, in the tray) when the user signs in. Windows only.
+    run_at_startup: bool,
 }
 
 impl Default for Config {
@@ -57,6 +59,7 @@ impl Default for Config {
             silence_threshold: 0.01,
             close_to_tray: true,
             overlay: true,
+            run_at_startup: false,
         }
     }
 }
@@ -100,6 +103,26 @@ fn run(model: &str, gpu: bool, samples: &[f32], language: &str) -> Row {
     }
 }
 
+/// Add or remove voicetype in the current user's Run key. Re-run on every launch
+/// while enabled, so the entry follows the exe if it is moved.
+fn set_autostart(on: bool) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        let mut cmd = std::process::Command::new("reg");
+        if on {
+            let Ok(exe) = std::env::current_exe() else { return };
+            cmd.args(["add", KEY, "/v", "voicetype", "/t", "REG_SZ", "/f", "/d"]).arg(format!("\"{}\" --hidden", exe.display()));
+        } else {
+            cmd.args(["delete", KEY, "/v", "voicetype", "/f"]);
+        }
+        let _ = cmd.creation_flags(0x0800_0000).output();
+    }
+    #[cfg(not(windows))]
+    let _ = on;
+}
+
 fn cli(args: &[String]) -> Result<(), String> {
     #[cfg(windows)]
     unsafe {
@@ -137,7 +160,7 @@ fn main() {
         }
         return;
     }
-    let r = ui::run();
+    let r = ui::run(args.iter().any(|a| a == "--hidden"));
     engine::shutdown();
     r.expect("ui");
 }
