@@ -1,0 +1,50 @@
+name: release
+
+# Push a tag like v0.2.0 (matching Cargo.toml's version) to build and publish
+# a release. Run it by hand from the Actions tab to get the zip as an artifact
+# without publishing anything.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} != Cargo.toml version v$v" }
+
+      - run: cargo test --release
+      - run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/voicetype | Out-Null
+          Copy-Item target/release/voicetype.exe, packaging/README.txt dist/voicetype/
+          # Windows line endings so Notepad on older Windows shows it properly.
+          (Get-Content dist/voicetype/README.txt) -join "`r`n" | Set-Content -NoNewline dist/voicetype/README.txt
+          Compress-Archive -Path dist/voicetype -DestinationPath dist/voicetype-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voicetype-windows-x64
+          path: dist/voicetype-windows-x64.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/voicetype-windows-x64.zip --title "voicetype ${{ github.ref_name }}" --generate-notes
