@@ -1,0 +1,28 @@
+[package]
+name = "voicetype"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arboard = "3.7.0"
+cpal = "0.15"
+dirs = "7.0.0"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "wayland", "x11"] }
+enigo = "0.6.1"
+global-hotkey = "0.9.0"
+hound = "3.5.1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "rustls-tls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tray-icon = "0.26.1"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Security", "Win32_System_Console", "Win32_Graphics_Dwm"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
