@@ -27,6 +27,9 @@ then transcribes an 11 s clip in about 0.1 s instead of about 16 s.
   to compare speed and accuracy.
 - **General:** run at startup (starts in the tray), close to tray, and the
   floating indicator.
+- **Updates:** each launch checks GitHub for a newer release. With automatic
+  updates on (the default) it downloads it, checks its SHA-256, and restarts into
+  it once you're not dictating. Otherwise General shows an **Update now** button.
 
 Settings, models and the engine live in `%APPDATA%\voicetype`.
 
@@ -66,4 +69,7 @@ Bump `version` in `Cargo.toml`, commit, then push a matching tag:
 git tag v0.1.1 && git push origin main v0.1.1
 ```
 
-The `release` workflow tests, builds and attaches the zip to a GitHub release.
+The `release` workflow tests, builds and attaches the zip and its `.sha256` to
+a GitHub release. Installed copies pick it up on their next launch; the updater
+only offers releases that have the `.sha256` file. To test updating, run a
+release build with `VOICETYPE_PRETEND_VERSION=0.0.1`.

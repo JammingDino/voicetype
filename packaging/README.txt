@@ -12,7 +12,10 @@ The pages on the left change how it works:
   Hands-free   stop on silence, type each phrase as you pause, say "hey jarvis"
   Microphone   choose the mic and how loud counts as speech
   Output       paste or type keystrokes
-  General      run at startup, tray, floating indicator
+  General      run at startup, tray, floating indicator, updates
+
+It checks for updates each time it starts and installs them by itself
+(you can turn that off in General).
 
 Closing the window keeps it running in the tray (bottom-right, by the clock);
 right-click the tray icon -> Quit to exit. A floating pill at the bottom of the
