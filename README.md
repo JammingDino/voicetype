@@ -22,10 +22,15 @@ then transcribes an 11 s clip in about 0.1 s instead of about 16 s.
 - **Shortcut:** `Ctrl+Alt+Space` by default. Hold to talk, or switch to press to
   start and press again to stop. Click the shortcut box and press new keys to change it.
 - **Hands-free (all optional):** stop on silence, real-time typing (each phrase
-  is typed as soon as you pause), a live preview in the floating indicator, and a
-  wake word ("hey jarvis") that starts recording without the keyboard.
+  is typed as soon as you pause), a live preview in the floating indicator with
+  its own update rate, and a wake word ("hey jarvis") that starts recording without
+  the keyboard, with a choice of how strictly it matches, its own silence timeout
+  and a sound when it triggers.
 - **Output:** paste (default; fast, any character, and your clipboard text is put back
-  afterwards) or synthetic keystrokes for places that block paste.
+  afterwards) or synthetic keystrokes for places that block paste. Choose what goes
+  after each phrase (nothing, a space, a new line, your own text), a key to press when
+  a recording ends (Enter, Shift + Enter, Ctrl + Enter, Tab), and whether to drop
+  the ending period.
 - **Test bench:** record or load a WAV and run it through every installed model
   to compare speed and accuracy.
 - **General:** run at startup (starts in the tray), close to tray, and the
@@ -57,8 +62,9 @@ The server stops after 10 idle minutes and when the app quits.
 ## Build
 
 ```sh
-cargo build --release        # pure Rust; no C toolchain needed
+cargo build --release        # no C toolchain needed; rc.exe from the Windows SDK embeds the icon
 cargo test
+cargo test -- --ignored      # dictation end to end (needs samples/jfk.wav, tiny.en and the engine)
 voicetype --test base.en jfk.wav    # transcribe a file from the command line
 ```
 

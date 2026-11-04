@@ -12,9 +12,9 @@ Dictate into any window on Windows. Speech recognition runs on your own PC; noth
 | | |
 |---|---|
 | **Shortcut** | pick new keys (click the box, press them); hold to talk or press to start |
-| **Hands-free** | stop on silence, type each phrase as you pause, say "hey jarvis" to start |
+| **Hands-free** | stop on silence, type each phrase as you pause, live preview speed, say "hey jarvis" to start and tune how it matches |
 | **Microphone** | choose the mic and how loud counts as speech |
-| **Output** | paste or type keystrokes |
+| **Output** | paste or type keystrokes; what goes after each phrase; press Enter or another key when you finish |
 | **General** | run at startup, tray, floating indicator, updates |
 
 Closing the window keeps voicetype in the tray; right-click the tray icon → **Quit** to exit. Uninstall from **Settings → Apps → Installed apps**.
