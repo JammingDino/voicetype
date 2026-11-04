@@ -21,8 +21,15 @@ pub struct Config {
     output: output::Mode,
     language: String,
     device: Option<String>,
-    trailing_space: bool,
-    /// Toggle and wake-word recordings end by themselves after this much silence.
+    /// What goes between phrases, and after the last one unless `end_key` is set.
+    after_phrase: output::After,
+    custom_after: String,
+    /// Pressed once when a recording ends, if anything was typed.
+    end_key: output::EndKey,
+    end_key_delay_secs: f32,
+    /// Whisper ends most phrases with a period, which isn't always wanted.
+    drop_period: bool,
+    /// Toggle recordings end by themselves after this much silence.
     auto_stop: bool,
     auto_stop_secs: f32,
     /// Real-time: type each phrase as soon as you pause, instead of one recording at the end.
@@ -30,8 +37,14 @@ pub struct Config {
     pause_secs: f32,
     /// Show the words so far in the overlay while you talk.
     live_preview: bool,
+    preview_secs: f32,
     wake_word: bool,
     wake_phrase: String,
+    wake_match: dictation::WakeMatch,
+    /// Wake-word recordings end after this much silence.
+    wake_stop_secs: f32,
+    /// Play the system sound when the wake phrase is heard.
+    wake_chime: bool,
     /// RMS below this is always silence. Raise it in a noisy room.
     silence_threshold: f32,
     close_to_tray: bool,
@@ -52,14 +65,22 @@ impl Default for Config {
             output: output::Mode::Paste,
             language: "auto".into(),
             device: None,
-            trailing_space: true,
+            after_phrase: output::After::Space,
+            custom_after: String::new(),
+            end_key: output::EndKey::None,
+            end_key_delay_secs: 0.0,
+            drop_period: false,
             auto_stop: true,
             auto_stop_secs: 2.0,
             split_on_pause: false,
             pause_secs: 0.8,
             live_preview: true,
+            preview_secs: 1.0,
             wake_word: false,
             wake_phrase: "hey jarvis".into(),
+            wake_match: dictation::WakeMatch::LastWord,
+            wake_stop_secs: 2.0,
+            wake_chime: true,
             silence_threshold: 0.01,
             close_to_tray: true,
             overlay: true,
@@ -69,12 +90,33 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    fn separator(&self) -> &str {
+        match self.after_phrase {
+            output::After::Nothing => "",
+            output::After::Space => " ",
+            output::After::NewLine => "\n",
+            output::After::Custom => &self.custom_after,
+        }
+    }
+}
+
 fn config_path() -> std::path::PathBuf {
     engine::data_dir().join("config.json")
 }
 
+fn parse_config(bytes: &[u8]) -> Option<Config> {
+    let mut c: Config = serde_json::from_slice(bytes).ok()?;
+    // Configs from before `after_phrase` had this on/off instead.
+    let old: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    if old["trailing_space"] == false {
+        c.after_phrase = output::After::Nothing;
+    }
+    Some(c)
+}
+
 fn load_config() -> Config {
-    std::fs::read(config_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(config_path()).ok().and_then(|b| parse_config(&b)).unwrap_or_default()
 }
 
 fn save_config(c: &Config) {
@@ -180,4 +222,18 @@ fn main() {
     let r = ui::run(flag("--hidden"));
     engine::shutdown();
     r.expect("ui");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_spacing_setting_carries_over() {
+        assert!(parse_config(br#"{"trailing_space":false}"#).unwrap().separator().is_empty());
+        assert_eq!(parse_config(br#"{"trailing_space":true}"#).unwrap().separator(), " ");
+        assert_eq!(parse_config(br#"{"model":"tiny.en"}"#).unwrap().separator(), " ");
+        let saved = serde_json::to_vec(&Config { after_phrase: output::After::NewLine, ..Default::default() }).unwrap();
+        assert_eq!(parse_config(&saved).unwrap().separator(), "\n");
+    }
 }

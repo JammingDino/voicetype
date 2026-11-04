@@ -10,14 +10,78 @@ pub enum Mode {
     Keys,
 }
 
+/// What goes between phrases; the text itself for `Custom` is in the config.
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum After {
+    Nothing,
+    Space,
+    NewLine,
+    Custom,
+}
+
+impl After {
+    pub const ALL: [(After, &str); 4] = [(After::Nothing, "Nothing"), (After::Space, "A space"), (After::NewLine, "A new line"), (After::Custom, "Custom text")];
+}
+
+/// A key pressed once when a recording ends.
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EndKey {
+    None,
+    Enter,
+    ShiftEnter,
+    CtrlEnter,
+    Tab,
+}
+
+impl EndKey {
+    pub const ALL: [(EndKey, &str); 5] = [(EndKey::None, "Nothing"), (EndKey::Enter, "Press Enter"), (EndKey::ShiftEnter, "Press Shift + Enter"), (EndKey::CtrlEnter, "Press Ctrl + Enter"), (EndKey::Tab, "Press Tab")];
+}
+
+/// Test hook: append to a file instead of typing into whatever has focus.
+fn fake_output(text: &str) -> Option<Result<(), String>> {
+    use std::io::Write;
+    let path = std::env::var("VOICETYPE_FAKE_OUTPUT").ok()?;
+    Some(std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| f.write_all(text.as_bytes())).map_err(|e| e.to_string()))
+}
+
+pub fn press(key: EndKey) -> Result<(), String> {
+    let (modifier, k) = match key {
+        EndKey::None => return Ok(()),
+        EndKey::Enter => (None, Key::Return),
+        EndKey::ShiftEnter => (Some(Key::Shift), Key::Return),
+        EndKey::CtrlEnter => (Some(Key::Control), Key::Return),
+        EndKey::Tab => (None, Key::Tab),
+    };
+    wait_for_modifiers_up();
+    if let Some(r) = fake_output(&format!("<{key:?}>")) {
+        return r;
+    }
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    if let Some(m) = modifier {
+        enigo.key(m, Press).map_err(|e| e.to_string())?;
+    }
+    let r = enigo.key(k, Click).map_err(|e| e.to_string());
+    if let Some(m) = modifier {
+        let _ = enigo.key(m, Release);
+    }
+    r
+}
+
+/// The system's default sound, played without blocking.
+pub fn chime() {
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
+    }
+}
+
 pub fn emit(text: &str, mode: Mode) -> Result<(), String> {
     // The hotkey's modifiers may still be held; Ctrl+V with Alt down is Ctrl+Alt+V.
     wait_for_modifiers_up();
-    // Test hook: append to a file instead of typing into whatever has focus.
-    if let Ok(path) = std::env::var("VOICETYPE_FAKE_OUTPUT") {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
-        return f.write_all(text.as_bytes()).map_err(|e| e.to_string());
+    if let Some(r) = fake_output(text) {
+        return r;
     }
     inject(text, mode)?;
     // Tried anyway in case the check is wrong; UIPI drops input silently, so say why nothing appeared.

@@ -68,7 +68,8 @@ pub fn spawn(cfg: Arc<Mutex<Config>>, state: Arc<State>, notify: Notify) -> Send
 
 struct Session {
     audio: Vec<f32>,
-    auto_stop: bool,
+    /// Seconds of silence that end the recording, if any do.
+    stop_after: Option<f32>,
     manual: bool,
     heard: bool,
     seg_heard: bool,
@@ -79,14 +80,15 @@ struct Session {
 }
 
 impl Session {
-    fn new(auto_stop: bool, manual: bool) -> Self {
-        Session { audio: Vec::new(), auto_stop, manual, heard: false, seg_heard: false, silence: 0, since_partial: 0, strip_wake: false, committed_any: false }
+    fn new(stop_after: Option<f32>, manual: bool) -> Self {
+        Session { audio: Vec::new(), stop_after, manual, heard: false, seg_heard: false, silence: 0, since_partial: 0, strip_wake: false, committed_any: false }
     }
 }
 
-struct Job {
-    samples: Vec<f32>,
-    strip_wake: bool,
+enum Job {
+    Clip { samples: Vec<f32>, wake: bool },
+    /// The recording is over: follow up what it typed.
+    End,
 }
 
 type Partial = Arc<Mutex<Option<Vec<f32>>>>;
@@ -107,7 +109,7 @@ fn mic_loop(rx: Receiver<Cmd>, cfg: Arc<Mutex<Config>>, state: Arc<State>, notif
             return;
         }
         state.pending.fetch_add(1, Ordering::Relaxed);
-        let _ = jobs.send(Job { samples, strip_wake: std::mem::take(&mut s.strip_wake) });
+        let _ = jobs.send(Job::Clip { samples, wake: std::mem::take(&mut s.strip_wake) });
         s.committed_any = true;
     };
     let finish = |s: Option<Session>| {
@@ -117,7 +119,10 @@ fn mic_loop(rx: Receiver<Cmd>, cfg: Arc<Mutex<Config>>, state: Arc<State>, notif
                 commit(&mut s);
             }
             state.recording.store(false, Ordering::Relaxed);
-            if !s.committed_any {
+            if s.committed_any {
+                state.pending.fetch_add(1, Ordering::Relaxed);
+                let _ = jobs.send(Job::End);
+            } else {
                 state.say("Heard nothing");
             }
             notify();
@@ -131,17 +136,17 @@ fn mic_loop(rx: Receiver<Cmd>, cfg: Arc<Mutex<Config>>, state: Arc<State>, notif
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        let start = |auto_stop, manual| {
+        let start = |stop_after, manual| {
             state.recording.store(true, Ordering::Relaxed);
             state.say("Listening…");
             notify();
-            Session::new(auto_stop, manual)
+            Session::new(stop_after, manual)
         };
         match cmd {
-            Some(Cmd::Hold) if session.is_none() => session = Some(start(false, true)),
+            Some(Cmd::Hold) if session.is_none() => session = Some(start(None, true)),
             Some(Cmd::Release) if session.as_ref().is_some_and(|s| s.manual) => finish(session.take()),
             Some(Cmd::Toggle) if session.is_some() => finish(session.take()),
-            Some(Cmd::Toggle) => session = Some(start(c.auto_stop, true)),
+            Some(Cmd::Toggle) => session = Some(start(c.auto_stop.then_some(c.auto_stop_secs), true)),
             _ => {}
         }
 
@@ -190,17 +195,19 @@ fn mic_loop(rx: Receiver<Cmd>, cfg: Arc<Mutex<Config>>, state: Arc<State>, notif
                 let paused = s.seg_heard && s.silence >= (c.pause_secs * SR as f32) as usize;
                 if (c.split_on_pause && paused) || s.audio.len() >= MAX_SEGMENT {
                     commit(s);
-                } else if c.live_preview && c.overlay && s.seg_heard && s.since_partial >= SR {
+                } else if c.live_preview && c.overlay && s.seg_heard && s.since_partial >= (c.preview_secs * SR as f32) as usize {
                     s.since_partial = 0;
                     *partial.lock().unwrap() = Some(s.audio.clone());
                 }
-                let quiet = (c.auto_stop_secs * SR as f32) as usize;
-                if s.auto_stop && ((s.heard && s.silence >= quiet) || (!s.heard && s.silence >= SR * 10)) {
+                if s.stop_after.is_some_and(|secs| (s.heard && s.silence >= (secs * SR as f32) as usize) || (!s.heard && s.silence >= SR * 10)) {
                     finish(session.take());
                 }
             } else if c.wake_word {
                 if let Some(audio) = wake.feed(frame, speech, |a| heard_wake(a, &c)) {
-                    let mut s = start(true, false);
+                    if c.wake_chime {
+                        output::chime();
+                    }
+                    let mut s = start(Some(c.wake_stop_secs), false);
                     s.audio = audio;
                     s.heard = true;
                     s.seg_heard = true;
@@ -270,28 +277,87 @@ fn transcribe(c: &Config, samples: &[f32], wake: bool) -> Result<String, String>
 fn heard_wake(samples: &[f32], c: &Config) -> bool {
     let text = transcribe(c, samples, true);
     eprintln!("[wake] heard {text:?}");
-    text.is_ok_and(|t| after_wake(&t, &c.wake_phrase).is_some())
+    text.is_ok_and(|t| after_wake(&t, &c.wake_phrase, c.wake_match).is_some())
 }
 
-/// Byte index just past the wake phrase's last word ("jarvis" in "hey jarvis"),
-/// which whisper spells reliably; "hey" often comes out as "Hey," "A" or nothing.
-fn after_wake(text: &str, phrase: &str) -> Option<usize> {
-    let word = phrase.split_whitespace().last()?.to_ascii_lowercase();
-    let lower = text.to_ascii_lowercase();
-    lower.find(&word).map(|i| i + word.len())
+/// How much of the wake phrase has to be heard, and where.
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WakeMatch {
+    /// Just the last word ("jarvis" in "hey jarvis"), which whisper spells
+    /// reliably; "hey" often comes out as "Hey," "A" or nothing.
+    LastWord,
+    Phrase,
+    /// The whole phrase, as the first thing said.
+    Start,
 }
 
-fn strip_wake(text: &str, phrase: &str) -> String {
-    let Some(i) = after_wake(text, phrase) else { return text.to_string() };
+impl WakeMatch {
+    pub const ALL: [(WakeMatch, &str); 3] = [
+        (WakeMatch::LastWord, "Forgiving: just its last word, anywhere in what I say"),
+        (WakeMatch::Phrase, "Whole phrase, anywhere in what I say"),
+        (WakeMatch::Start, "Strict: whole phrase, as the first thing I say"),
+    ];
+}
+
+/// Byte index just past the wake phrase. Whole words only, ignoring case and punctuation.
+fn after_wake(text: &str, phrase: &str, mode: WakeMatch) -> Option<usize> {
+    let want: Vec<String> = phrase.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+    let want = if mode == WakeMatch::LastWord { &want[want.len().checked_sub(1)?..] } else { &want[..] };
+    if want.is_empty() {
+        return None;
+    }
+    let (mut words, mut start) = (Vec::new(), None);
+    for (i, ch) in text.char_indices().chain([(text.len(), ' ')]) {
+        match (ch.is_alphanumeric(), start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                words.push((text[s..i].to_lowercase(), i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    let hit = words.windows(want.len()).position(|w| w.iter().zip(want).all(|((a, _), b)| a == b))?;
+    (mode != WakeMatch::Start || hit == 0).then(|| words[hit + want.len() - 1].1)
+}
+
+fn strip_wake(text: &str, phrase: &str, mode: WakeMatch) -> String {
+    let Some(i) = after_wake(text, phrase, mode) else { return text.to_string() };
     let rest = text[i..].trim_start_matches(|c: char| !c.is_alphanumeric());
     let mut chars = rest.chars();
     chars.next().map(|f| f.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// Removes the sentence-ending period if asked to; other punctuation stays.
+fn tidy(text: String, c: &Config) -> String {
+    if c.drop_period { text.trim_end_matches(['.', '。']).to_string() } else { text }
+}
+
+/// The separator is typed in front of the next phrase rather than after each
+/// one, so that a key pressed at the end doesn't send a trailing space with it.
+fn with_separator(text: String, c: &Config, typed: bool) -> String {
+    if typed { format!("{}{text}", c.separator()) } else { text }
+}
+
+/// After a recording's last phrase: the chosen key, or else the separator so the next dictation doesn't run into it.
+fn end_output(c: &Config) -> Result<(), String> {
+    if c.end_key != output::EndKey::None {
+        std::thread::sleep(Duration::from_secs_f32(c.end_key_delay_secs));
+        output::press(c.end_key)
+    } else if c.separator().is_empty() {
+        Ok(())
+    } else {
+        output::emit(c.separator(), c.output)
+    }
 }
 
 fn spawn_worker(cfg: Arc<Mutex<Config>>, state: Arc<State>, notify: Notify) -> (Sender<Job>, Partial) {
     let (tx, rx) = channel::<Job>();
     let partial: Partial = Arc::default();
     let slot = partial.clone();
+    // Whether the current recording has typed anything yet.
+    let mut typed = false;
     std::thread::spawn(move || loop {
         // Committed segments always go before a preview.
         let job = match rx.try_recv() {
@@ -303,7 +369,7 @@ fn spawn_worker(cfg: Arc<Mutex<Config>>, state: Arc<State>, notify: Notify) -> (
                 Some(p) => {
                     let c = cfg.lock().unwrap().clone();
                     if let Ok(t) = transcribe(&c, &p, c.wake_word) {
-                        *state.preview.lock().unwrap() = if c.wake_word { strip_wake(&t, &c.wake_phrase) } else { t };
+                        *state.preview.lock().unwrap() = if c.wake_word { strip_wake(&t, &c.wake_phrase, c.wake_match) } else { t };
                         notify();
                     }
                     continue;
@@ -317,19 +383,32 @@ fn spawn_worker(cfg: Arc<Mutex<Config>>, state: Arc<State>, notify: Notify) -> (
         };
         let Some(job) = job else { continue };
         let c = cfg.lock().unwrap().clone();
+        let Job::Clip { samples, wake } = job else {
+            // Nothing typed (all silence, say) means nothing to send with Enter either.
+            if std::mem::take(&mut typed) {
+                if let Err(e) = end_output(&c) {
+                    state.say(format!("Error: {e}"));
+                }
+            }
+            state.pending.fetch_sub(1, Ordering::Relaxed);
+            notify();
+            continue;
+        };
         state.say("Transcribing…");
         notify();
         let t0 = std::time::Instant::now();
-        let text = transcribe(&c, &job.samples, job.strip_wake)
-            .map(|t| if job.strip_wake { strip_wake(&t, &c.wake_phrase) } else { t });
+        let text = transcribe(&c, &samples, wake)
+            .map(|t| if wake { strip_wake(&t, &c.wake_phrase, c.wake_match) } else { t })
+            .map(|t| tidy(t, &c));
         let msg = match text {
             Ok(t) if t.is_empty() => "Heard nothing".to_string(),
-            Ok(mut t) => {
-                if c.trailing_space {
-                    t.push(' ');
-                }
+            Ok(t) => {
+                let t = with_separator(t, &c, typed);
                 match output::emit(&t, c.output) {
-                    Ok(()) => format!("Typed {} words ({:.2} s)", t.split_whitespace().count(), t0.elapsed().as_secs_f32()),
+                    Ok(()) => {
+                        typed = true;
+                        format!("Typed {} words ({:.2} s)", t.split_whitespace().count(), t0.elapsed().as_secs_f32())
+                    }
                     Err(e) => format!("Error: {e}"),
                 }
             }
@@ -349,11 +428,77 @@ mod tests {
 
     #[test]
     fn wake_phrase_is_found_and_stripped() {
-        assert_eq!(strip_wake("Hey Jarvis, write this down.", "hey jarvis"), "Write this down.");
-        assert_eq!(strip_wake("A Jarvis. ok", "hey jarvis"), "Ok");
-        assert_eq!(strip_wake("Hey, Jarvis!", "hey jarvis"), "");
-        assert_eq!(strip_wake("no wake here", "hey jarvis"), "no wake here");
-        assert!(after_wake("Hey Travis", "hey jarvis").is_none());
+        use WakeMatch::*;
+        assert_eq!(strip_wake("Hey Jarvis, write this down.", "hey jarvis", LastWord), "Write this down.");
+        assert_eq!(strip_wake("A Jarvis. ok", "hey jarvis", LastWord), "Ok");
+        assert_eq!(strip_wake("Hey, Jarvis!", "hey jarvis", LastWord), "");
+        assert_eq!(strip_wake("no wake here", "hey jarvis", LastWord), "no wake here");
+        assert!(after_wake("Hey Travis", "hey jarvis", LastWord).is_none());
+    }
+
+    #[test]
+    fn wake_match_modes_trade_forgiveness_for_false_starts() {
+        use WakeMatch::*;
+        let hit = |text, mode| after_wake(text, "hey jarvis", mode).is_some();
+        assert!(hit("A Jarvis, go", LastWord) && !hit("A Jarvis, go", Phrase));
+        assert!(hit("so, hey, Jarvis!", Phrase) && !hit("so, hey, Jarvis!", Start));
+        assert!(hit("Hey, Jarvis! Go", Start));
+        assert_eq!(strip_wake("Hey, Jarvis! go on", "hey jarvis", Start), "Go on");
+        // Whole words only, and a phrase of no words never matches.
+        assert!(!hit("jarvises everywhere", LastWord));
+        assert!(after_wake("anything", " ", LastWord).is_none());
+        assert!(after_wake("anything", "!", Phrase).is_none());
+    }
+
+    #[test]
+    fn separator_goes_between_phrases_and_never_before_the_first() {
+        let c = Config::default();
+        assert_eq!(with_separator("One.".into(), &c, false), "One.");
+        assert_eq!(with_separator("Two.".into(), &c, true), " Two.");
+        let c = Config { after_phrase: output::After::Custom, custom_after: " / ".into(), drop_period: true, ..c };
+        assert_eq!(with_separator("Two".into(), &c, true), " / Two");
+        assert_eq!(tidy("Done...".into(), &c), "Done");
+        assert_eq!(tidy("Done?".into(), &c), "Done?");
+    }
+
+    /// The real path from mic to output, on the sample clip, with the installed tiny.en.
+    /// `cargo test -- --ignored` (needs samples/jfk.wav, the model and the engine).
+    #[test]
+    #[ignore]
+    fn session_types_phrases_then_presses_the_end_key() {
+        let out = std::env::temp_dir().join("voicetype-e2e.txt");
+        let _ = std::fs::remove_file(&out);
+        unsafe {
+            std::env::set_var("VOICETYPE_FAKE_MIC", "samples/jfk.wav");
+            std::env::set_var("VOICETYPE_FAKE_OUTPUT", &out);
+        }
+        let cfg = Config {
+            model: "tiny.en".into(),
+            split_on_pause: true,
+            end_key: output::EndKey::Enter,
+            after_phrase: output::After::Custom,
+            custom_after: "|".into(),
+            drop_period: true,
+            auto_stop_secs: 1.5,
+            ..Default::default()
+        };
+        let state = Arc::new(State::default());
+        let tx = spawn(Arc::new(Mutex::new(cfg)), state.clone(), Arc::new(|| {}));
+        tx.send(Cmd::Toggle).unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        for _ in 0..600 {
+            if !state.busy() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        engine::shutdown();
+        let typed = std::fs::read_to_string(&out).unwrap();
+        println!("{typed}");
+        assert!(typed.ends_with("<Enter>"), "{typed}");
+        assert!(typed.contains("|"), "real-time phrases are joined by the separator: {typed}");
+        assert!(typed.to_lowercase().contains("country"), "{typed}");
+        assert!(!typed.contains(".<Enter>") && !typed.contains(" <Enter>"), "{typed}");
     }
 
     #[test]

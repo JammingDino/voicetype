@@ -142,6 +142,11 @@ fn tray_icon(c: Color32) -> Option<tray_icon::Icon> {
     tray_icon::Icon::from_rgba(rgba, w, h).ok()
 }
 
+/// The label a dropdown shows for its current value.
+fn label_of<T: PartialEq + Copy>(all: &[(T, &'static str)], value: T) -> &'static str {
+    all.iter().find(|(v, _)| *v == value).map_or("", |(_, label)| label)
+}
+
 /// "ctrl+alt+Space" → "Ctrl + Alt + Space"
 fn pretty_hotkey(s: &str) -> String {
     s.split('+').map(|p| {
@@ -705,7 +710,7 @@ impl App {
         Self::header(ui, "Hands-free", "Each of these is optional and works on its own.");
         let e = &mut self.edit;
         card(ui, |ui| {
-            section(ui, "Stop on silence", "Press-to-start and wake-word recordings end by themselves. Hold-to-talk always ends when you let go.");
+            section(ui, "Stop on silence", "Press-to-start recordings end by themselves. Hold-to-talk always ends when you let go; wake-word recordings have their own setting below.");
             ui.checkbox(&mut e.auto_stop, "Stop recording automatically");
             ui.add_enabled(e.auto_stop, egui::Slider::new(&mut e.auto_stop_secs, 0.5..=6.0).text("seconds of silence").step_by(0.1));
         });
@@ -717,6 +722,11 @@ impl App {
         card(ui, |ui| {
             section(ui, "Live preview", "Show the words heard so far in the floating indicator while you talk.");
             ui.checkbox(&mut e.live_preview, "Show live preview");
+            ui.add_enabled(e.live_preview, egui::Slider::new(&mut e.preview_secs, 0.2..=5.0).text("seconds between updates").step_by(0.1));
+            ui.label(RichText::new("Each update transcribes the current phrase again, so shorter gaps work the CPU or GPU harder. If the model can't keep up, the preview updates as fast as it can.").small().color(MUTED));
+            if !e.overlay {
+                ui.label(RichText::new("The preview appears in the floating indicator, which is off (see General).").small().color(AMBER));
+            }
         });
         card(ui, |ui| {
             section(ui, "Wake word", "Say the phrase to start recording without touching the keyboard. The mic stays open and each burst of speech is checked with the dictation model. The phrase itself isn't typed.");
@@ -724,6 +734,20 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label("Phrase");
                 ui.add_enabled(e.wake_word, egui::TextEdit::singleline(&mut e.wake_phrase).desired_width(220.0));
+            });
+            ui.add_enabled_ui(e.wake_word, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Trigger on");
+                    let selected = label_of(&dictation::WakeMatch::ALL, e.wake_match);
+                    egui::ComboBox::from_id_salt("wake_match").width(ui.available_width().min(400.0)).selected_text(selected).show_ui(ui, |ui| {
+                        for (mode, label) in dictation::WakeMatch::ALL {
+                            ui.selectable_value(&mut e.wake_match, mode, label);
+                        }
+                    });
+                });
+                ui.label(RichText::new("If it starts when nobody asked it to, go stricter. If it misses you, go more forgiving.").small().color(MUTED));
+                ui.add(egui::Slider::new(&mut e.wake_stop_secs, 0.5..=10.0).text("seconds of silence end the recording").step_by(0.1));
+                ui.checkbox(&mut e.wake_chime, "Play a sound when the phrase is heard");
             });
         });
     }
@@ -771,8 +795,36 @@ impl App {
             ui.radio_value(&mut e.output, output::Mode::Keys, "Type keystrokes: for places that block paste (some terminals, remote desktops, games)");
         });
         card(ui, |ui| {
-            section(ui, "Spacing", "");
-            ui.checkbox(&mut e.trailing_space, "Add a space after each piece of text, so the next dictation doesn't run into it");
+            section(ui, "After each phrase", "Typed between phrases, and after the last one so the next dictation doesn't run into it.");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("after_phrase").width(160.0).selected_text(label_of(&output::After::ALL, e.after_phrase)).show_ui(ui, |ui| {
+                    for (after, label) in output::After::ALL {
+                        ui.selectable_value(&mut e.after_phrase, after, label);
+                    }
+                });
+                if e.after_phrase == output::After::Custom {
+                    ui.add(egui::TextEdit::singleline(&mut e.custom_after).desired_width(160.0).hint_text("text to add"));
+                }
+            });
+            if e.after_phrase == output::After::NewLine && e.output == output::Mode::Keys {
+                ui.label(RichText::new("With keystrokes a new line is typed as Enter, which sends the message in most chat apps. Paste keeps it as a line break.").small().color(AMBER));
+            }
+        });
+        card(ui, |ui| {
+            section(ui, "When a recording ends", "Happens once per recording, after all its text is in, and only if something was typed. With real-time typing, phrases in between don't trigger it.");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("end_key").width(200.0).selected_text(label_of(&output::EndKey::ALL, e.end_key)).show_ui(ui, |ui| {
+                    for (key, label) in output::EndKey::ALL {
+                        ui.selectable_value(&mut e.end_key, key, label);
+                    }
+                });
+            });
+            ui.add_enabled(e.end_key != output::EndKey::None, egui::Slider::new(&mut e.end_key_delay_secs, 0.0..=3.0).text("seconds to wait first").step_by(0.1));
+            ui.label(RichText::new("Enter sends the message in most chat apps; the wait gives slow apps time to take the text in. A key replaces the text above at the end, so no trailing space goes with it.").small().color(MUTED));
+        });
+        card(ui, |ui| {
+            section(ui, "Text", "");
+            ui.checkbox(&mut e.drop_period, "Remove the period at the end of each phrase");
         });
     }
 
