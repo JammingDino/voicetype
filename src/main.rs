@@ -5,6 +5,7 @@ mod dictation;
 mod engine;
 mod output;
 mod ui;
+mod update;
 
 use std::time::Instant;
 
@@ -36,6 +37,8 @@ pub struct Config {
     overlay: bool,
     /// Launch (hidden, in the tray) when the user signs in. Windows only.
     run_at_startup: bool,
+    /// Download new releases on launch and restart into them when idle.
+    auto_update: bool,
 }
 
 impl Default for Config {
@@ -60,6 +63,7 @@ impl Default for Config {
             close_to_tray: true,
             overlay: true,
             run_at_startup: false,
+            auto_update: true,
         }
     }
 }
@@ -160,6 +164,7 @@ fn main() {
         }
         return;
     }
+    update::cleanup();
     let r = ui::run(args.iter().any(|a| a == "--hidden"));
     engine::shutdown();
     r.expect("ui");

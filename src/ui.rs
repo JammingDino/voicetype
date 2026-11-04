@@ -1,7 +1,7 @@
 //! The window (Models / Test / Settings), the floating overlay, and the tray icon.
 
 use crate::dictation::{self, Cmd};
-use crate::{Config, Row, audio, engine, output};
+use crate::{Config, Row, audio, engine, output, update};
 use eframe::egui::{self, Color32, CornerRadius, Event, Frame, RichText, Sense, Stroke, Vec2, pos2, vec2};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
@@ -187,7 +187,20 @@ enum Msg {
     TestDone,
     Downloaded(Result<(), String>),
     Show,
+    UpdateChecked(Result<Option<update::Release>, String>),
+    UpdateDownloaded(Result<(std::path::PathBuf, String), String>),
     Quit,
+}
+
+enum Upd {
+    Off,
+    Checking,
+    UpToDate,
+    Available(update::Release),
+    Downloading(String),
+    /// Downloaded and verified; installed as soon as nothing is being dictated.
+    Ready(std::path::PathBuf, String),
+    Failed(String),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -234,6 +247,7 @@ struct App {
     hidden: bool,
     quitting: bool,
     hide_frames: u8,
+    upd: Upd,
     overlay_open: bool,
 }
 
@@ -316,9 +330,13 @@ impl App {
             hidden,
             quitting: false,
             hide_frames: if hidden { 3 } else { 0 },
+            upd: Upd::Off,
             overlay_open: false,
         };
         app.apply_hotkey();
+        if update::enabled() {
+            app.check_updates(ctx);
+        }
         if app.edit.run_at_startup {
             crate::set_autostart(true);
         }
@@ -391,6 +409,11 @@ impl App {
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(14.0);
             ui.label(RichText::new(format!("{} {}", if self.edit.mode == "hold" { "Hold" } else { "Press" }, pretty_hotkey(&self.edit.hotkey))).small().color(MUTED));
+            match &self.upd {
+                Upd::Available(r) => drop(ui.label(RichText::new(format!("Update {} available (General)", r.version)).small().color(ACCENT))),
+                Upd::Downloading(v) | Upd::Ready(_, v) => drop(ui.label(RichText::new(format!("Updating to {v}…")).small().color(ACCENT))),
+                _ => {}
+            }
             if self.edit.wake_word {
                 ui.label(RichText::new(format!("or say “{}”", self.edit.wake_phrase)).small().color(MUTED));
             }
@@ -753,6 +776,59 @@ impl App {
         });
     }
 
+    fn check_updates(&mut self, ctx: &egui::Context) {
+        self.upd = Upd::Checking;
+        self.spawn(|tx| drop(tx.send(Msg::UpdateChecked(update::check()))), ctx);
+    }
+
+    fn download_update(&mut self, r: update::Release, ctx: &egui::Context) {
+        self.upd = Upd::Downloading(r.version.clone());
+        self.spawn(move |tx| drop(tx.send(Msg::UpdateDownloaded(update::download(&r).map(|exe| (exe, r.version))))), ctx);
+    }
+
+    /// Swap in the downloaded exe and restart into it, keeping the window hidden if it was.
+    fn install_update(&mut self, exe: std::path::PathBuf) {
+        engine::shutdown();
+        let args: &[&str] = if self.hidden { &["--hidden"] } else { &[] };
+        match update::apply(&exe, args) {
+            Ok(()) => {
+                self.tray = None; // removes the icon now instead of leaving a ghost until hovered
+                std::process::exit(0);
+            }
+            Err(e) => self.upd = Upd::Failed(e),
+        }
+    }
+
+    fn update_card(&mut self, ui: &mut egui::Ui) {
+        card(ui, |ui| {
+            section(ui, "Updates", &format!("You have voicetype {}.", update::current()));
+            ui.checkbox(&mut self.edit.auto_update, "Download and install updates automatically");
+            ui.label(RichText::new("Checked each time voicetype starts; an update installs when you're not dictating, then voicetype restarts.").small().color(MUTED));
+            ui.horizontal(|ui| {
+                let text = match &self.upd {
+                    Upd::Off => "Updates are off in development builds".to_string(),
+                    Upd::Checking => "Checking…".into(),
+                    Upd::UpToDate => "Up to date".into(),
+                    Upd::Available(r) => format!("Version {} is available", r.version),
+                    Upd::Downloading(v) => format!("Downloading {v}…"),
+                    Upd::Ready(_, v) => format!("Installing {v}…"),
+                    Upd::Failed(e) => e.clone(),
+                };
+                let enabled = update::enabled() && matches!(self.upd, Upd::UpToDate | Upd::Failed(_) | Upd::Available(_));
+                if let Upd::Available(r) = &self.upd {
+                    if ui.add(primary("Update now")).clicked() {
+                        let r = r.clone();
+                        self.download_update(r, ui.ctx());
+                    }
+                } else if ui.add_enabled(enabled, egui::Button::new("Check for updates")).clicked() {
+                    self.check_updates(ui.ctx());
+                }
+                let color = if matches!(self.upd, Upd::Failed(_)) { RED } else { MUTED };
+                ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
+            });
+        });
+    }
+
     fn general_tab(&mut self, ui: &mut egui::Ui) {
         Self::header(ui, "General", "");
         let e = &mut self.edit;
@@ -767,6 +843,7 @@ impl App {
             ui.checkbox(&mut e.close_to_tray, "Closing the window keeps voicetype running in the tray");
             ui.checkbox(&mut e.overlay, "Show a floating indicator while dictating");
         });
+        self.update_card(ui);
     }
 
     /// A pill at the bottom of the screen: never focused, clicks pass through it.
@@ -821,6 +898,11 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
+                Msg::UpdateChecked(Ok(Some(r))) if self.edit.auto_update => self.download_update(r, ctx),
+                Msg::UpdateChecked(Ok(Some(r))) => self.upd = Upd::Available(r),
+                Msg::UpdateChecked(Ok(None)) => self.upd = Upd::UpToDate,
+                Msg::UpdateChecked(Err(e)) | Msg::UpdateDownloaded(Err(e)) => self.upd = Upd::Failed(e),
+                Msg::UpdateDownloaded(Ok((exe, v))) => self.upd = Upd::Ready(exe, v),
                 Msg::Quit => {
                     self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -828,6 +910,15 @@ impl eframe::App for App {
             }
         }
         let busy = self.state.busy();
+        if let Upd::Ready(exe, _) = &self.upd {
+            // Never restart in the middle of a dictation or a model download.
+            if !busy && !engine::DOWNLOADING.load(Ordering::Relaxed) {
+                let exe = exe.clone();
+                self.install_update(exe);
+            } else {
+                ctx.request_repaint_after(Duration::from_secs(1));
+            }
+        }
         let color = if self.state.recording.load(Ordering::Relaxed) { RED } else if busy { AMBER } else { ACCENT };
         if color != self.tray_color {
             self.tray_color = color;

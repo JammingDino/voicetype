@@ -145,7 +145,7 @@ fn http() -> reqwest::blocking::Client {
 }
 
 /// One download at a time; resets the cancel flag.
-fn exclusive<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+pub fn exclusive<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("a download is already running".into());
     }
@@ -200,7 +200,7 @@ fn fetch_engine(asset: &str, sha: &str, dir: PathBuf, size: u64) -> Result<(), S
 }
 
 /// Stream to a `.part` file, hashing on the way; rename only once the SHA-256 matches.
-fn download(url: &str, dest: &Path, sha256: &str, size: u64) -> Result<(), String> {
+pub fn download(url: &str, dest: &Path, sha256: &str, size: u64) -> Result<(), String> {
     let mut res = http().get(url).send().map_err(|e| format!("download of {url} failed: {e}"))?;
     if !res.status().is_success() {
         return Err(format!("download of {url} failed: {}", res.status()));
@@ -241,7 +241,7 @@ fn download(url: &str, dest: &Path, sha256: &str, size: u64) -> Result<(), Strin
 }
 
 /// The system `tar` (bsdtar on Windows 10+) reads zip as well as tar.gz.
-fn extract(archive: &Path, into: &Path) -> Result<(), String> {
+pub fn extract(archive: &Path, into: &Path) -> Result<(), String> {
     let tar = if cfg!(windows) {
         PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())).join(r"System32\tar.exe")
     } else {
