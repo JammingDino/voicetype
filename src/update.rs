@@ -1,5 +1,5 @@
 //! Updates from GitHub releases: check the latest release on launch, download
-//! its zip (verified against the `.sha256` file the release workflow publishes
+//! its setup exe (verified against the `.sha256` file the release workflow publishes
 //! beside it), then swap the exe and restart.
 //!
 //! Windows lets a running exe be renamed but not overwritten, so the swap is:
@@ -10,12 +10,12 @@ use crate::engine;
 use std::path::PathBuf;
 
 const LATEST: &str = "https://api.github.com/repos/JammingDino/voicetype/releases/latest";
-const ASSET: &str = "voicetype-windows-x64.zip";
+const ASSET: &str = "voicetype-setup.exe";
 
 #[derive(Clone)]
 pub struct Release {
     pub version: String,
-    zip_url: String,
+    exe_url: String,
     sha_url: String,
 }
 
@@ -37,7 +37,7 @@ fn newer(candidate: &str, than: &str) -> bool {
     parse(candidate) > parse(than)
 }
 
-/// The latest release, if it is newer than this build and has a Windows zip.
+/// The latest release, if it is newer than this build and has a Windows build.
 pub fn check() -> Result<Option<Release>, String> {
     let body: serde_json::Value = reqwest::blocking::Client::new()
         .get(LATEST)
@@ -56,7 +56,7 @@ pub fn check() -> Result<Option<Release>, String> {
         body["assets"].as_array()?.iter().find(|a| a["name"] == name)?["browser_download_url"].as_str().map(str::to_string)
     };
     match (url(ASSET), url(&format!("{ASSET}.sha256"))) {
-        (Some(zip_url), Some(sha_url)) => Ok(Some(Release { version: tag.trim_start_matches('v').to_string(), zip_url, sha_url })),
+        (Some(exe_url), Some(sha_url)) => Ok(Some(Release { version: tag.trim_start_matches('v').to_string(), exe_url, sha_url })),
         _ => Ok(None), // a release without a verifiable Windows build is not offered
     }
 }
@@ -65,7 +65,7 @@ fn dir() -> PathBuf {
     engine::data_dir().join("update")
 }
 
-/// Download and unpack the release; returns the new exe, ready for `apply`.
+/// Download and verify the release; returns the new exe, ready for `apply`.
 pub fn download(r: &Release) -> Result<PathBuf, String> {
     let dir = dir();
     let _ = std::fs::remove_dir_all(&dir);
@@ -81,11 +81,9 @@ pub fn download(r: &Release) -> Result<PathBuf, String> {
     if sha.len() != 64 {
         return Err("the update's checksum file is malformed".into());
     }
-    let zip = dir.join(ASSET);
-    engine::exclusive(|| engine::download(&r.zip_url, &zip, &sha, 0))?;
-    engine::extract(&zip, &dir)?;
-    let exe = dir.join("voicetype").join("voicetype.exe");
-    exe.is_file().then_some(exe).ok_or_else(|| "the update zip has no voicetype.exe".into())
+    let exe = dir.join(ASSET);
+    engine::exclusive(|| engine::download(&r.exe_url, &exe, &sha, 0))?;
+    Ok(exe)
 }
 
 /// Put `new_exe` where this exe is and start it with `args`. The caller exits right after.

@@ -3,6 +3,7 @@
 mod audio;
 mod dictation;
 mod engine;
+mod install;
 mod output;
 mod ui;
 mod update;
@@ -164,8 +165,19 @@ fn main() {
         }
         return;
     }
+    let flag = |f: &str| args.iter().any(|a| a == f);
+    if flag("--uninstall") {
+        install::uninstall(flag("--silent"));
+        return;
+    }
+    if install::offer(flag("--silent")) {
+        return;
+    }
+    if install::is_installed_copy() {
+        let _ = install::register();
+    }
     update::cleanup();
-    let r = ui::run(args.iter().any(|a| a == "--hidden"));
+    let r = ui::run(flag("--hidden"));
     engine::shutdown();
     r.expect("ui");
 }

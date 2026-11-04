@@ -241,7 +241,7 @@ pub fn download(url: &str, dest: &Path, sha256: &str, size: u64) -> Result<(), S
 }
 
 /// The system `tar` (bsdtar on Windows 10+) reads zip as well as tar.gz.
-pub fn extract(archive: &Path, into: &Path) -> Result<(), String> {
+fn extract(archive: &Path, into: &Path) -> Result<(), String> {
     let tar = if cfg!(windows) {
         PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())).join(r"System32\tar.exe")
     } else {
