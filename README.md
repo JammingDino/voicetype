@@ -6,9 +6,12 @@ your cursor is. Nothing is sent to the cloud.
 
 ## Install
 
-Download `voicetype-windows-x64.zip` from
-[Releases](../../releases), unzip, and run `voicetype.exe`. It's unsigned, so
-SmartScreen asks first: **More info → Run anyway**.
+Download `voicetype-setup.exe` from [Releases](../../releases) and run it. It's
+unsigned, so SmartScreen asks first: **More info → Run anyway**. Click **Yes** to
+install for your account into `%LOCALAPPDATA%\Programs\voicetype` (no admin
+needed), with a Start menu shortcut and an entry in **Installed apps**, where it
+also uninstalls. **No** runs it once without installing. After that it updates
+itself.
 
 On first run, open **Models** and download one (Base (English), 148 MB, is a good
 start). With an NVIDIA GPU, also download the GPU engine (670 MB): Large v3 Turbo
@@ -48,6 +51,8 @@ The server stops after 10 idle minutes and when the app quits.
 | `src/dictation.rs` | hotkey sessions, auto-stop, split on pause, wake word |
 | `src/output.rs` | paste / keystroke injection |
 | `src/ui.rs` | window, overlay, tray |
+| `src/install.rs` | the exe as its own installer and uninstaller |
+| `src/update.rs` | checking GitHub releases and swapping in a new exe |
 
 ## Build
 
@@ -66,10 +71,11 @@ For testing without a mic or typing into real apps, set
 Bump `version` in `Cargo.toml`, commit, then push a matching tag:
 
 ```sh
-git tag v0.1.1 && git push origin main v0.1.1
+git tag v0.2.0 && git push origin main v0.2.0
 ```
 
-The `release` workflow tests, builds and attaches the zip and its `.sha256` to
-a GitHub release. Installed copies pick it up on their next launch; the updater
+The `release` workflow tests, builds and publishes `voicetype-setup.exe` and its
+`.sha256`, with `packaging/release-notes.md` as the release text. Installed copies pick it up on their next launch; the updater
 only offers releases that have the `.sha256` file. To test updating, run a
-release build with `VOICETYPE_PRETEND_VERSION=0.0.1`.
+release build with `VOICETYPE_PRETEND_VERSION=0.0.1`. `--silent` installs (or,
+with `--uninstall`, uninstalls) without prompts.
