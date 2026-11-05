@@ -32,6 +32,7 @@ pub struct State {
     rms: AtomicU32,
     threshold: AtomicU32,
     pub preview: Mutex<String>,
+    pub stats: Mutex<crate::Stats>,
     pub status: Mutex<String>,
 }
 
@@ -68,6 +69,8 @@ pub fn spawn(cfg: Arc<Mutex<Config>>, state: Arc<State>, notify: Notify) -> Send
 
 struct Session {
     audio: Vec<f32>,
+    /// Samples recorded in total; `audio` only holds the current segment.
+    recorded: usize,
     /// Seconds of silence that end the recording, if any do.
     stop_after: Option<f32>,
     manual: bool,
@@ -81,14 +84,14 @@ struct Session {
 
 impl Session {
     fn new(stop_after: Option<f32>, manual: bool) -> Self {
-        Session { audio: Vec::new(), stop_after, manual, heard: false, seg_heard: false, silence: 0, since_partial: 0, strip_wake: false, committed_any: false }
+        Session { audio: Vec::new(), recorded: 0, stop_after, manual, heard: false, seg_heard: false, silence: 0, since_partial: 0, strip_wake: false, committed_any: false }
     }
 }
 
 enum Job {
     Clip { samples: Vec<f32>, wake: bool },
     /// The recording is over: follow up what it typed.
-    End,
+    End { recorded: usize },
 }
 
 type Partial = Arc<Mutex<Option<Vec<f32>>>>;
@@ -121,7 +124,7 @@ fn mic_loop(rx: Receiver<Cmd>, cfg: Arc<Mutex<Config>>, state: Arc<State>, notif
             state.recording.store(false, Ordering::Relaxed);
             if s.committed_any {
                 state.pending.fetch_add(1, Ordering::Relaxed);
-                let _ = jobs.send(Job::End);
+                let _ = jobs.send(Job::End { recorded: s.recorded });
             } else {
                 state.say("Heard nothing");
             }
@@ -181,6 +184,7 @@ fn mic_loop(rx: Receiver<Cmd>, cfg: Arc<Mutex<Config>>, state: Arc<State>, notif
             let n = frame.len();
             if let Some(s) = session.as_mut() {
                 s.audio.extend_from_slice(frame);
+                s.recorded += n;
                 if speech {
                     s.heard = true;
                     s.seg_heard = true;
@@ -208,6 +212,7 @@ fn mic_loop(rx: Receiver<Cmd>, cfg: Arc<Mutex<Config>>, state: Arc<State>, notif
                         output::chime();
                     }
                     let mut s = start(Some(c.wake_stop_secs), false);
+                    s.recorded = audio.len();
                     s.audio = audio;
                     s.heard = true;
                     s.seg_heard = true;
@@ -383,16 +388,27 @@ fn spawn_worker(cfg: Arc<Mutex<Config>>, state: Arc<State>, notify: Notify) -> (
         };
         let Some(job) = job else { continue };
         let c = cfg.lock().unwrap().clone();
-        let Job::Clip { samples, wake } = job else {
-            // Nothing typed (all silence, say) means nothing to send with Enter either.
-            if std::mem::take(&mut typed) {
-                if let Err(e) = end_output(&c) {
-                    state.say(format!("Error: {e}"));
+        let (samples, wake) = match job {
+            Job::Clip { samples, wake } => (samples, wake),
+            Job::End { recorded } => {
+                // Nothing typed (all silence, say) means nothing to send with Enter either, and nothing to count.
+                if std::mem::take(&mut typed) {
+                    {
+                        let mut stats = state.stats.lock().unwrap();
+                        stats.recordings += 1;
+                        stats.recorded_secs += recorded as f64 / SR as f64;
+                        if !cfg!(test) {
+                            crate::save_stats(&stats);
+                        }
+                    }
+                    if let Err(e) = end_output(&c) {
+                        state.say(format!("Error: {e}"));
+                    }
                 }
+                state.pending.fetch_sub(1, Ordering::Relaxed);
+                notify();
+                continue;
             }
-            state.pending.fetch_sub(1, Ordering::Relaxed);
-            notify();
-            continue;
         };
         state.say("Transcribing…");
         notify();
@@ -403,11 +419,15 @@ fn spawn_worker(cfg: Arc<Mutex<Config>>, state: Arc<State>, notify: Notify) -> (
         let msg = match text {
             Ok(t) if t.is_empty() => "Heard nothing".to_string(),
             Ok(t) => {
+                let (chars, words) = (t.chars().count() as u64, t.split_whitespace().count() as u64);
                 let t = with_separator(t, &c, typed);
                 match output::emit(&t, c.output) {
                     Ok(()) => {
                         typed = true;
-                        format!("Typed {} words ({:.2} s)", t.split_whitespace().count(), t0.elapsed().as_secs_f32())
+                        let mut stats = state.stats.lock().unwrap();
+                        stats.chars += chars;
+                        stats.words += words;
+                        format!("Typed {words} words ({:.2} s)", t0.elapsed().as_secs_f32())
                     }
                     Err(e) => format!("Error: {e}"),
                 }
@@ -499,6 +519,10 @@ mod tests {
         assert!(typed.contains("|"), "real-time phrases are joined by the separator: {typed}");
         assert!(typed.to_lowercase().contains("country"), "{typed}");
         assert!(!typed.contains(".<Enter>") && !typed.contains(" <Enter>"), "{typed}");
+        let stats = state.stats.lock().unwrap();
+        assert_eq!(stats.recordings, 1);
+        assert!(stats.recorded_secs > 10.0, "the clip's 11 s, not the transcription time: {}", stats.recorded_secs);
+        assert!(stats.chars > 50 && stats.words > 10);
     }
 
     #[test]

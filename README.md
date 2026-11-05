@@ -33,13 +33,18 @@ then transcribes an 11 s clip in about 0.1 s instead of about 16 s.
   the ending period.
 - **Test bench:** record or load a WAV and run it through every installed model
   to compare speed and accuracy.
-- **General:** run at startup (starts in the tray), close to tray, and the
-  floating indicator.
+- **Indicator:** five looks for the floating indicator, each with its own colours,
+  font and way of showing your mic (level bars, a segmented meter, a subtitle line, a
+  VU needle, an oscilloscope), shown live so you can click one. It can also keep one
+  size instead of growing to fit the words.
+- **Stats:** lifetime recording time (the time you spent talking, not the time the
+  GPU took), recordings, and characters and words typed.
+- **General:** run at startup (starts in the tray), close to tray.
 - **Updates:** each launch checks GitHub for a newer release. With automatic
   updates on (the default) it downloads it, checks its SHA-256, and restarts into
   it once you're not dictating. Otherwise General shows an **Update now** button.
 
-Settings, models and the engine live in `%APPDATA%\voicetype`.
+Settings, stats, models and the engine live in `%APPDATA%\voicetype`.
 
 ## How it works
 

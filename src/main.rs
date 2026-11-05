@@ -49,6 +49,9 @@ pub struct Config {
     silence_threshold: f32,
     close_to_tray: bool,
     overlay: bool,
+    overlay_style: ui::OverlayStyle,
+    /// The indicator opens at its full size instead of growing to fit the words.
+    overlay_fixed: bool,
     /// Launch (hidden, in the tray) when the user signs in. Windows only.
     run_at_startup: bool,
     /// Download new releases on launch and restart into them when idle.
@@ -84,6 +87,8 @@ impl Default for Config {
             silence_threshold: 0.01,
             close_to_tray: true,
             overlay: true,
+            overlay_style: ui::OverlayStyle::Classic,
+            overlay_fixed: false,
             run_at_startup: false,
             auto_update: true,
         }
@@ -122,6 +127,35 @@ fn load_config() -> Config {
 fn save_config(c: &Config) {
     let _ = std::fs::create_dir_all(engine::data_dir());
     let _ = std::fs::write(config_path(), serde_json::to_vec_pretty(c).unwrap());
+}
+
+/// Lifetime totals of what was dictated and typed. Kept out of `Config` because
+/// the dictation worker writes these while the UI owns saving the settings.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Stats {
+    recordings: u64,
+    /// Time the mic was recording, not time spent transcribing.
+    recorded_secs: f64,
+    chars: u64,
+    words: u64,
+}
+
+fn stats_path() -> std::path::PathBuf {
+    engine::data_dir().join("stats.json")
+}
+
+fn load_stats() -> Stats {
+    std::fs::read(stats_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Through a temp file: these totals can't be rebuilt if a crash truncates them.
+fn save_stats(s: &Stats) {
+    let _ = std::fs::create_dir_all(engine::data_dir());
+    let tmp = stats_path().with_extension("tmp");
+    if std::fs::write(&tmp, serde_json::to_vec_pretty(s).unwrap()).is_ok() {
+        let _ = std::fs::rename(tmp, stats_path());
+    }
 }
 
 pub struct Row {
