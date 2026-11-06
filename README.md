@@ -36,7 +36,7 @@ then transcribes an 11 s clip in about 0.1 s instead of about 16 s.
 - **Indicator:** five looks for the floating indicator, each with its own colours,
   font and way of showing your mic (level bars, a segmented meter, a subtitle line, a
   VU needle, an oscilloscope), shown live so you can click one. It can also keep one
-  size instead of growing to fit the words.
+  size instead of growing to fit the words, and show on the display you choose.
 - **Stats:** lifetime recording time (the time you spent talking, not the time the
   GPU took), recordings, and characters and words typed.
 - **General:** run at startup (starts in the tray), close to tray.

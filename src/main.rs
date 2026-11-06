@@ -52,6 +52,8 @@ pub struct Config {
     overlay_style: ui::OverlayStyle,
     /// The indicator opens at its full size instead of growing to fit the words.
     overlay_fixed: bool,
+    /// The monitor's device name; `None` is the primary display.
+    overlay_display: Option<String>,
     /// Launch (hidden, in the tray) when the user signs in. Windows only.
     run_at_startup: bool,
     /// Download new releases on launch and restart into them when idle.
@@ -89,6 +91,7 @@ impl Default for Config {
             overlay: true,
             overlay_style: ui::OverlayStyle::Classic,
             overlay_fixed: false,
+            overlay_display: None,
             run_at_startup: false,
             auto_update: true,
         }

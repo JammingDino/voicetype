@@ -15,7 +15,7 @@ Dictate into any window on Windows. Speech recognition runs on your own PC; noth
 | **Hands-free** | stop on silence, type each phrase as you pause, live preview speed, say "hey jarvis" to start and tune how it matches |
 | **Microphone** | choose the mic and how loud counts as speech |
 | **Output** | paste or type keystrokes; what goes after each phrase; press Enter or another key when you finish |
-| **Indicator** | five completely different looks for the floating indicator; keep it one size |
+| **Indicator** | five completely different looks for the floating indicator; keep it one size; choose which display it shows on |
 | **Stats** | lifetime recording time, characters and words typed |
 | **General** | run at startup, tray, updates |
 

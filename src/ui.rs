@@ -1042,6 +1042,17 @@ impl App {
         card(ui, |ui| {
             ui.checkbox(&mut e.overlay, "Show a floating indicator while dictating");
             ui.checkbox(&mut e.overlay_fixed, "Keep it one size, instead of growing to fit the words");
+            #[cfg(windows)]
+            ui.horizontal(|ui| {
+                let displays = displays();
+                ui.label("Show it on");
+                egui::ComboBox::from_id_salt("overlay_display").width(260.0).selected_text(display_choice(&displays, e.overlay_display.as_deref())).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut e.overlay_display, None, "Primary display");
+                    for (n, d) in displays.iter().enumerate() {
+                        ui.selectable_value(&mut e.overlay_display, Some(d.name.clone()), d.label(n));
+                    }
+                });
+            });
         });
         style_gallery(ui, &mut e.overlay_style, e.overlay_fixed, e.live_preview);
     }
@@ -1210,7 +1221,7 @@ impl eframe::App for App {
         }
         self.overlay_open = self.state.busy() && self.edit.overlay;
         if self.overlay_open {
-            show_overlay(&ctx, self.state.clone(), self.edit.overlay_style, self.edit.overlay_fixed && self.edit.live_preview);
+            show_overlay(&ctx, self.state.clone(), self.edit.overlay_style, self.edit.overlay_fixed && self.edit.live_preview, self.edit.overlay_display.clone());
         }
         if self.hidden {
             return;
@@ -1297,6 +1308,99 @@ fn clip_to_pill(title: &str, pill: egui::Rect, ppp: f32, radius: f32) {
     }
 }
 
+/// A connected monitor, as Windows reports it.
+#[cfg(windows)]
+struct Display {
+    /// Like `\\.\DISPLAY2`. Saved in the config; survives a resolution change.
+    name: String,
+    /// Left, top, right, bottom in physical pixels on the virtual desktop.
+    rect: [i32; 4],
+    primary: bool,
+}
+
+#[cfg(windows)]
+impl Display {
+    /// `n` counts from the left: device numbers can be as odd as `DISPLAY17`.
+    fn label(&self, n: usize) -> String {
+        let primary = if self.primary { ", primary" } else { "" };
+        format!("Display {} ({} × {}{primary})", n + 1, self.rect[2] - self.rect[0], self.rect[3] - self.rect[1])
+    }
+}
+
+#[cfg(windows)]
+fn displays() -> Vec<Display> {
+    use windows_sys::Win32::Foundation::{LPARAM, RECT};
+    use windows_sys::Win32::Graphics::Gdi::*;
+    unsafe extern "system" fn add(monitor: HMONITOR, _: HDC, _: *mut RECT, list: LPARAM) -> i32 {
+        unsafe {
+            let mut info: MONITORINFOEXW = std::mem::zeroed();
+            info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+            if GetMonitorInfoW(monitor, &mut info.monitorInfo) != 0 {
+                let device = info.szDevice;
+                let len = device.iter().position(|&c| c == 0).unwrap_or(device.len());
+                let r = info.monitorInfo.rcMonitor;
+                (*(list as *mut Vec<Display>)).push(Display {
+                    name: String::from_utf16_lossy(&device[..len]),
+                    rect: [r.left, r.top, r.right, r.bottom],
+                    primary: info.monitorInfo.dwFlags & windows_sys::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY != 0,
+                });
+            }
+            1
+        }
+    }
+    let mut list: Vec<Display> = Vec::new();
+    unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(add), &mut list as *mut _ as LPARAM) };
+    list.sort_by_key(|d| (d.rect[0], d.rect[1]));
+    list
+}
+
+/// The chosen display, or the primary one when it's unset or unplugged.
+#[cfg(windows)]
+fn pick_display<'a>(displays: &'a [Display], wanted: Option<&str>) -> Option<&'a Display> {
+    displays.iter().find(|d| Some(d.name.as_str()) == wanted).or_else(|| displays.iter().find(|d| d.primary))
+}
+
+/// What the settings dropdown shows for the current choice.
+#[cfg(windows)]
+fn display_choice(displays: &[Display], wanted: Option<&str>) -> String {
+    let Some(wanted) = wanted else { return "Primary display".into() };
+    match displays.iter().position(|d| d.name == wanted) {
+        Some(n) => displays[n].label(n),
+        None => "A display that isn't connected".into(),
+    }
+}
+
+/// Top left for a window of `size` physical pixels: centred, just above the bottom edge.
+#[cfg(windows)]
+fn overlay_origin(rect: [i32; 4], size: (i32, i32), dpi: u32) -> (i32, i32) {
+    let gap = 64 * dpi as i32 / 96;
+    ((rect[0] + rect[2] - size.0) / 2, rect[3] - size.1 - gap)
+}
+
+/// Keep the indicator on its display. Done with Win32 in physical pixels each frame:
+/// egui's positions are logical, and moving onto a monitor with other scaling
+/// resizes the window, so the right spot is only known once that has happened.
+#[cfg(windows)]
+fn place_overlay(title: &str, wanted: Option<&str>) {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    let displays = displays();
+    let Some(display) = pick_display(&displays, wanted) else { return };
+    let wide: Vec<u16> = title.encode_utf16().chain([0]).collect();
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), wide.as_ptr());
+        let mut r: RECT = std::mem::zeroed();
+        if hwnd.is_null() || GetWindowRect(hwnd, &mut r) == 0 {
+            return;
+        }
+        let (x, y) = overlay_origin(display.rect, (r.right - r.left, r.bottom - r.top), GetDpiForWindow(hwnd));
+        if (x, y) != (r.left, r.top) {
+            SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+}
+
 /// The window: never resized, because `clip_to_pill` shows only the pill in it.
 const OVERLAY_SIZE: Vec2 = vec2(620.0, 130.0);
 const PILL_COMPACT: Vec2 = vec2(240.0, 52.0);
@@ -1311,7 +1415,7 @@ struct OverlayView {
 
 /// A pill at the bottom of the screen: never focused, clicks pass through it.
 /// Deferred, so eframe creates and paints it itself, even while the main window is hidden.
-fn show_overlay(ctx: &egui::Context, state: Arc<dictation::State>, style: OverlayStyle, fixed: bool) {
+fn show_overlay(ctx: &egui::Context, state: Arc<dictation::State>, style: OverlayStyle, fixed: bool, display: Option<String>) {
     let size = OVERLAY_SIZE;
     let monitor = ctx.input(|i| i.viewport().monitor_size).unwrap_or(vec2(1920.0, 1080.0));
     let builder = egui::ViewportBuilder::default()
@@ -1329,9 +1433,12 @@ fn show_overlay(ctx: &egui::Context, state: Arc<dictation::State>, style: Overla
         let view = OverlayView { recording: state.recording.load(Ordering::Relaxed), level: state.level(), preview: state.preview.lock().unwrap().clone() };
         let pill = paint_overlay(ui, &view, style, fixed);
         #[cfg(windows)]
-        clip_to_pill("voicetype indicator", pill, ui.ctx().pixels_per_point(), style.theme().radius);
+        {
+            place_overlay("voicetype indicator", display.as_deref());
+            clip_to_pill("voicetype indicator", pill, ui.ctx().pixels_per_point(), style.theme().radius);
+        }
         #[cfg(not(windows))]
-        let _ = pill;
+        let _ = (pill, &display);
         ui.ctx().request_repaint_after(Duration::from_millis(33));
     });
 }
@@ -1496,6 +1603,28 @@ fn paint_overlay(ui: &mut egui::Ui, view: &OverlayView, style: OverlayStyle, fix
         p.with_clip_rect(area).galley(pos2(x, y), galley, th.text);
     }
     rect
+}
+
+#[cfg(all(test, windows))]
+mod display_tests {
+    use super::*;
+
+    fn display(n: u32, rect: [i32; 4], primary: bool) -> Display {
+        Display { name: format!(r"\\.\DISPLAY{n}"), rect, primary }
+    }
+
+    #[test]
+    fn indicator_goes_on_the_chosen_display() {
+        let all = [display(1, [0, 0, 1920, 1080], true), display(2, [-2560, -200, 0, 1240], false)];
+        assert_eq!(pick_display(&all, None).unwrap().name, all[0].name);
+        assert_eq!(pick_display(&all, Some(r"\\.\DISPLAY2")).unwrap().name, all[1].name);
+        // Unplugged: back to the primary, while settings still says what was chosen.
+        assert_eq!(pick_display(&all, Some(r"\\.\DISPLAY9")).unwrap().name, all[0].name);
+        assert_eq!(display_choice(&all, Some(r"\\.\DISPLAY9")), "A display that isn't connected");
+        assert_eq!(display_choice(&all, Some(r"\\.\DISPLAY2")), "Display 2 (2560 × 1440)");
+        // Centred on a display left of and above the primary, with the gap scaled for 150%.
+        assert_eq!(overlay_origin(all[1].rect, (930, 195), 144), (-1745, 949));
+    }
 }
 
 #[cfg(test)]
