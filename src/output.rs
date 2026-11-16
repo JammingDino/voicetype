@@ -87,7 +87,7 @@ pub fn emit(text: &str, mode: Mode) -> Result<(), String> {
     // Tried anyway in case the check is wrong; UIPI drops input silently, so say why nothing appeared.
     #[cfg(windows)]
     if win::foreground_elevated() {
-        return Err("couldn't type into an admin window (run voicetype as administrator to do that)".into());
+        return Err("couldn't type into an admin window (run VoiceType as administrator to do that)".into());
     }
     Ok(())
 }

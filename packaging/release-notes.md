@@ -19,5 +19,5 @@ Dictate into any window on Windows. Speech recognition runs on your own PC; noth
 | **Stats** | lifetime recording time, characters and words typed |
 | **General** | run at startup, tray, updates |
 
-Closing the window keeps voicetype in the tray; right-click the tray icon → **Quit** to exit. Uninstall from **Settings → Apps → Installed apps**.
+Closing the window keeps VoiceType in the tray; right-click the tray icon → **Quit** to exit. Uninstall from **Settings → Apps → Installed apps**.
 

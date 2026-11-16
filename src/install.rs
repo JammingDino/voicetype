@@ -20,7 +20,7 @@ fn installed_exe() -> PathBuf {
 }
 
 fn shortcut() -> PathBuf {
-    PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join(r"Microsoft\Windows\Start Menu\Programs\voicetype.lnk")
+    PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join(r"Microsoft\Windows\Start Menu\Programs\VoiceType.lnk")
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -74,7 +74,7 @@ fn stop_processes_in(dir: &Path) {
 fn ask(text: &str, style: u32) -> i32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
     let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let (t, c) = (w(text), w("voicetype"));
+    let (t, c) = (w(text), w("VoiceType"));
     unsafe { MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), style) }
 }
 
@@ -89,7 +89,7 @@ pub fn offer(silent: bool) -> bool {
     if !silent {
         let upgrading = installed_exe().is_file();
         let text = format!(
-            "{} voicetype {} for your account?\n\nIt goes in {}, with a Start menu shortcut and an entry in Installed apps. No admin rights needed. Your settings and models are kept.\n\nYes: install   No: run without installing",
+            "{} VoiceType {} for your account?\n\nIt goes in {}, with a Start menu shortcut and an entry in Installed apps. No admin rights needed. Your settings and models are kept.\n\nYes: install   No: run without installing",
             if upgrading { "Reinstall" } else { "Install" },
             env!("CARGO_PKG_VERSION"),
             install_dir().display()
@@ -104,7 +104,7 @@ pub fn offer(silent: bool) -> bool {
         Ok(()) => true,
         Err(e) => {
             if !silent {
-                ask(&format!("Installing voicetype failed:\n\n{e}"), MB_OK | MB_ICONERROR);
+                ask(&format!("Installing VoiceType failed:\n\n{e}"), MB_OK | MB_ICONERROR);
             }
             true
         }
@@ -136,6 +136,8 @@ fn install() -> Result<(), String> {
 
 fn make_shortcut() {
     let target = installed_exe();
+    // Replaced, not overwritten: an overwrite keeps the old file name's lowercase "voicetype".
+    let _ = std::fs::remove_file(shortcut());
     let _ = powershell(&format!(
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut({}); $s.TargetPath = {}; $s.WorkingDirectory = {}; $s.IconLocation = {} + ',0'; $s.Save()",
         ps(&shortcut()),
@@ -172,7 +174,7 @@ fn register() -> Result<(), String> {
          \"DisplayIcon\"={}\r\n\"InstallLocation\"={}\r\n\"URLInfoAbout\"=\"https://github.com/JammingDino/voicetype\"\r\n\
          \"UninstallString\"={}\r\n\"QuietUninstallString\"={}\r\n\
          \"NoModify\"=dword:00000001\r\n\"NoRepair\"=dword:00000001\r\n\"EstimatedSize\"=dword:{:08x}\r\n",
-        q("voicetype"),
+        q("VoiceType"),
         q(env!("CARGO_PKG_VERSION")),
         q(&exe_s),
         q(&install_dir().display().to_string()),
@@ -194,7 +196,7 @@ fn register() -> Result<(), String> {
 #[cfg(windows)]
 pub fn uninstall(silent: bool) {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
-    if !silent && ask("Uninstall voicetype?", MB_YESNO | MB_ICONQUESTION) != IDYES {
+    if !silent && ask("Uninstall VoiceType?", MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
     let data = crate::engine::data_dir();

@@ -54,6 +54,9 @@ pub struct Config {
     overlay_fixed: bool,
     /// The monitor's device name; `None` is the primary display.
     overlay_display: Option<String>,
+    theme: ui::ThemeChoice,
+    /// Given to whisper as its prompt, so it expects these words and spellings.
+    vocabulary: String,
     /// Launch (hidden, in the tray) when the user signs in. Windows only.
     run_at_startup: bool,
     /// Download new releases on launch and restart into them when idle.
@@ -92,6 +95,8 @@ impl Default for Config {
             overlay_style: ui::OverlayStyle::Classic,
             overlay_fixed: false,
             overlay_display: None,
+            theme: ui::ThemeChoice::Dark,
+            vocabulary: String::new(),
             run_at_startup: false,
             auto_update: true,
         }
@@ -171,12 +176,12 @@ pub struct Row {
 }
 
 /// Start the server and transcribe one clip, timing each half; used by the Test tab and the CLI.
-fn run(model: &str, gpu: bool, samples: &[f32], language: &str) -> Row {
+fn run(model: &str, gpu: bool, samples: &[f32], language: &str, prompt: &str) -> Row {
     let t0 = Instant::now();
     let r = engine::ensure_running(model, gpu);
     let start_s = t0.elapsed().as_secs_f32();
     let t1 = Instant::now();
-    let text = r.and_then(|url| engine::transcribe(&url, audio::encode_wav(samples), model, language, ""));
+    let text = r.and_then(|url| engine::transcribe(&url, audio::encode_wav(samples), model, language, prompt));
     Row {
         model: model.into(),
         start_s,
@@ -227,7 +232,7 @@ fn cli(args: &[String]) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_secs(secs));
         cap.stop()
     };
-    let r = run(&model, cfg.gpu, &samples, &cfg.language);
+    let r = run(&model, cfg.gpu, &samples, &cfg.language, cfg.vocabulary.trim());
     engine::shutdown();
     eprintln!("{} on {}: start {:.2} s, transcribe {:.2} s", r.model, if r.gpu { "GPU" } else { "CPU" }, r.start_s, r.secs);
     println!("{}", r.text?);

@@ -272,10 +272,12 @@ impl Wake {
     }
 }
 
-/// `wake`: the clip may hold the wake phrase, so prompt whisper with it; short
-/// names in a short clip are otherwise often heard as other words.
+/// Prompts whisper with the user's vocabulary and, with `wake`, the wake phrase:
+/// short names in a short clip are otherwise often heard as other words.
 fn transcribe(c: &Config, samples: &[f32], wake: bool) -> Result<String, String> {
-    let prompt = if wake { format!("{}.", c.wake_phrase) } else { String::new() };
+    // The wake phrase goes last: whisper weighs the end of its prompt most.
+    let wake = if wake { format!("{}.", c.wake_phrase) } else { String::new() };
+    let prompt = format!("{} {wake}", c.vocabulary.trim()).trim().to_string();
     engine::ensure_running(&c.model, c.gpu).and_then(|u| engine::transcribe(&u, audio::encode_wav(samples), &c.model, &c.language, &prompt))
 }
 
