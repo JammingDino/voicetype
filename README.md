@@ -1,4 +1,4 @@
-# voicetype
+# VoiceType
 
 Dictate into any window on Windows, with speech recognition running on your own
 machine. Hold a hotkey, talk, let go, and the text is pasted (or typed) wherever
@@ -31,6 +31,9 @@ then transcribes an 11 s clip in about 0.1 s instead of about 16 s.
   after each phrase (nothing, a space, a new line, your own text), a key to press when
   a recording ends (Enter, Shift + Enter, Ctrl + Enter, Tab), and whether to drop
   the ending period.
+- **Vocabulary:** part numbers, names and jargon you say often (`LM317, STM32F407,
+  0402`). They're given to the model as its prompt before every recording, so it
+  expects them and spells them your way.
 - **Test bench:** record or load a WAV and run it through every installed model
   to compare speed and accuracy.
 - **Indicator:** five looks for the floating indicator, each with its own colours,
@@ -39,7 +42,7 @@ then transcribes an 11 s clip in about 0.1 s instead of about 16 s.
   size instead of growing to fit the words, and show on the display you choose.
 - **Stats:** lifetime recording time (the time you spent talking, not the time the
   GPU took), recordings, and characters and words typed.
-- **General:** run at startup (starts in the tray), close to tray.
+- **General:** dark, light or match-Windows theme (the title bar follows it), run at startup (starts in the tray), close to tray.
 - **Updates:** each launch checks GitHub for a newer release. With automatic
   updates on (the default) it downloads it, checks its SHA-256, and restarts into
   it once you're not dictating. Otherwise General shows an **Update now** button.
@@ -48,7 +51,7 @@ Settings, stats, models and the engine live in `%APPDATA%\voicetype`.
 
 ## How it works
 
-voicetype doesn't embed a speech engine. It downloads whisper.cpp's prebuilt
+VoiceType doesn't embed a speech engine. It downloads whisper.cpp's prebuilt
 `whisper-server` (pinned to v1.9.2, SHA-256 verified) and the
 [ggml whisper models](https://huggingface.co/ggerganov/whisper.cpp) (pinned to a
 commit, SHA-256 verified), runs the server locally, and sends it 16 kHz WAV clips.
@@ -77,16 +80,21 @@ For testing without a mic or typing into real apps, set
 `VOICETYPE_FAKE_MIC=clip.wav` (plays the file as the microphone) and
 `VOICETYPE_FAKE_OUTPUT=out.txt` (appends text there instead of typing it).
 
+To screenshot the window without it appearing on screen (debug builds), set
+`VOICETYPE_SHOTS=<dir>`: it opens off-screen, saves each page as `<dir>/<page>.png`
+and exits. `VOICETYPE_SHOTS_PAGES=models,indicator` picks pages and
+`VOICETYPE_SHOTS_THEME=light` the theme.
+
 ## Releasing
 
-Bump `version` in `Cargo.toml`, commit, then push a matching tag:
+Push to `main`. The `release` workflow tests, builds and publishes
+`voicetype-setup.exe` and its `.sha256` as a new release, with
+`packaging/release-notes.md` as the release text. Installed copies pick it up on
+their next launch; the updater only offers releases that have the `.sha256` file.
 
-```sh
-git tag v0.2.0 && git push origin main v0.2.0
-```
-
-The `release` workflow tests, builds and publishes `voicetype-setup.exe` and its
-`.sha256`, with `packaging/release-notes.md` as the release text. Installed copies pick it up on their next launch; the updater
-only offers releases that have the `.sha256` file. To test updating, run a
-release build with `VOICETYPE_PRETEND_VERSION=0.0.1`. `--silent` installs (or,
-with `--uninstall`, uninstalls) without prompts.
+The version comes from `Cargo.toml`. If that version is already released, the
+workflow bumps the patch number itself and commits it back as `build: release X`
+(so pull before your next push). To release a minor or major version, set it in
+`Cargo.toml` before pushing. To test updating, run a release build with
+`VOICETYPE_PRETEND_VERSION=0.0.1`. `--silent` installs (or, with `--uninstall`,
+uninstalls) without prompts.

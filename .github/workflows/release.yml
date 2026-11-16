@@ -1,10 +1,14 @@
 name: release
 
-# Push a tag like v0.2.0 (matching Cargo.toml's version) to build and publish
-# a release. Run it by hand from the Actions tab to get the zip as an artifact
-# without publishing anything.
+# Every push to main publishes a release, which installed copies pick up on
+# their next launch. If Cargo.toml's version is already released, the patch
+# number is bumped first (and committed back); to choose a version yourself,
+# set it in Cargo.toml before pushing. Pushing a tag like v0.2.0 by hand still
+# works, and so does running it from the Actions tab to get the exe as an
+# artifact without publishing anything.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -16,8 +20,26 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags, to know which version is already released
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # The bump commit is pushed with GITHUB_TOKEN, which doesn't start another run.
+      - name: Pick the version
+        id: version
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $v = [version](Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $bumped = $false
+          if (git tag --list "v$v") {
+            $v = [version]::new($v.Major, $v.Minor, $v.Build + 1)
+            (Get-Content Cargo.toml -Raw) -replace '(?m)^version = ".+"', "version = `"$v`"" | Set-Content -NoNewline Cargo.toml
+            $bumped = $true
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "bumped=$bumped" >> $env:GITHUB_OUTPUT
 
       - name: Tag matches Cargo.toml
         if: startsWith(github.ref, 'refs/tags/')
@@ -43,8 +65,22 @@ jobs:
           name: voicetype-setup
           path: dist/voicetype-setup.exe*
 
+      # Only after tests and the build passed, so a broken push never bumps anything.
+      - name: Commit the bumped version
+        if: steps.version.outputs.bumped == 'True'
+        shell: pwsh
+        run: |
+          # cargo build rewrote Cargo.lock with the new version.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "build:              release ${{ steps.version.outputs.version }}"
+          git push origin HEAD:main
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/voicetype-setup.exe dist/voicetype-setup.exe.sha256 --title "voicetype ${{ github.ref_name }}" --notes-file packaging/release-notes.md --generate-notes
+        run: |
+          $tag = if ("${{ github.ref }}" -like 'refs/tags/*') { "${{ github.ref_name }}" } else { "v${{ steps.version.outputs.version }}" }
+          gh release create $tag dist/voicetype-setup.exe dist/voicetype-setup.exe.sha256 --target (git rev-parse HEAD) --title "VoiceType $tag" --notes-file packaging/release-notes.md --generate-notes
